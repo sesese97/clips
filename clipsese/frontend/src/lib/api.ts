@@ -49,7 +49,8 @@ export async function addMedia(id: string, file?: File, url?: string) {
 }
 
 export async function renderClip(id: string, body: {
-  start:number; end:number; layout:Layout; camera1:Crop; camera2?:Crop; content?:Crop; media_id?:string
+  start:number; end:number; layout:Layout; camera1:Crop; camera2?:Crop; content?:Crop; media_id?:string;
+  media_fit?:'contain'|'cover'; media_zoom?:number; media_x?:number; media_y?:number;
 }) {
   return json<{id:string;file:string}>(await request(`${API}/api/projects/${id}/render`, {
     method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
