@@ -5,3 +5,4 @@ pydantic>=2.9,<3
 numpy>=1.26,<3
 faster-whisper>=1.1,<2
 yt-dlp[default]>=2026.8.19
+bgutil-ytdlp-pot-provider==2.0.0
