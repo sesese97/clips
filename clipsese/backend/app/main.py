@@ -9,16 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from .models import RenderRequest, SearchRequest
-from .transcribe import keyword_search, theme_search, transcribe_project
+from .transcribe import keyword_search, prepare_youtube_transcript, theme_search, transcribe_project
 from .utils import is_allowed_url, project_dir, read_json, runtime_diagnostics, write_json
 from .video import add_media_upload, add_media_url, ingest_upload, ingest_youtube, render_clip
 
-app = FastAPI(title="ClipSese API", version="0.3.1")
+app = FastAPI(title="ClipSese API", version="0.4.0")
 
-# CORS: mantenemos el dominio configurado en Railway, localhost para desarrollo y además
-# aceptamos cualquier deployment *.vercel.app. Vercel cambia de hostname entre Production
-# y Preview; si el origen no coincide exactamente, el navegador oculta una respuesta 200 y
-# fetch() termina como un falso "Failed to fetch".
 origins = [
     x.strip().rstrip("/")
     for x in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
@@ -38,6 +34,14 @@ app.add_middleware(
 )
 
 
+def _ingest_youtube_job(project_id: str, url: str):
+    result = ingest_youtube(project_id, url)
+    if result.get("status") == "ready":
+        # En YouTube intentamos dejar lista la búsqueda automáticamente usando captions.
+        # Si no existen, el proyecto sigue listo y el usuario puede activar Whisper manualmente.
+        prepare_youtube_transcript(project_id)
+
+
 @app.get("/")
 def root():
     return {"app": "ClipSese API", "ok": True, "health": "/api/health", "docs": "/docs"}
@@ -45,7 +49,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.3.1", "runtime": runtime_diagnostics()}
+    return {"ok": True, "version": "0.4.0", "runtime": runtime_diagnostics()}
 
 
 @app.post("/api/projects")
@@ -81,7 +85,7 @@ async def create_project(
             "transcript_status": "not_started",
         }
         write_json(project_dir(pid) / "project.json", payload)
-        background.add_task(ingest_youtube, pid, youtube_url)
+        background.add_task(_ingest_youtube_job, pid, youtube_url)
         return payload
     except Exception as e:
         print(f"[CLIPSESE] create_project ERROR: {type(e).__name__}: {e}", flush=True)
@@ -105,6 +109,8 @@ def transcribe(project_id: str, background: BackgroundTasks):
         raise HTTPException(404, "Proyecto no encontrado")
     if pj.get("status") != "ready":
         raise HTTPException(409, "Espera a que termine la importación del video")
+    if pj.get("transcript_status") == "processing":
+        return {"status": "processing"}
     background.add_task(transcribe_project, project_id)
     return {"status": "processing"}
 
@@ -115,7 +121,8 @@ def search(project_id: str, req: SearchRequest):
     if not pj:
         raise HTTPException(404, "Proyecto no encontrado")
     if pj.get("transcript_status") != "ready":
-        raise HTTPException(409, "Primero termina la transcripción")
+        hint = pj.get("transcript_hint") or "La búsqueda todavía no está lista."
+        raise HTTPException(409, hint)
     if req.mode == "keyword":
         return {"results": keyword_search(project_id, req.query, req.max_results)}
     return {"results": theme_search(project_id, req.query, req.max_results)}
