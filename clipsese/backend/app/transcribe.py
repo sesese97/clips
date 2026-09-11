@@ -1,24 +1,122 @@
+import json
+import os
 import re
+import sys
+from pathlib import Path
 from threading import Lock
 
-from .utils import project_dir, read_json, write_json
+from .utils import CommandError, project_dir, read_json, run, write_json
 from .video import source_path
 
 _model = None
 _model_lock = Lock()
+BGUTIL_SERVER = os.getenv("BGUTIL_SERVER", "/opt/bgutil-ytdlp-pot-provider/server")
+
+
+def _save_project_transcript(project_id: str, segments: list[dict], *, language: str = "es", source: str = "unknown"):
+    pdir = project_dir(project_id)
+    write_json(pdir / "transcript.json", {"language": language, "source": source, "segments": segments})
+    project = read_json(pdir / "project.json") or {"id": project_id}
+    project["transcript_status"] = "ready"
+    project["transcript_source"] = source
+    project["transcript_segments"] = len(segments)
+    project.pop("transcript_error", None)
+    project.pop("transcript_hint", None)
+    write_json(pdir / "project.json", project)
+
+
+def _parse_json3(path: Path) -> list[dict]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    out: list[dict] = []
+    last_text = ""
+    for ev in data.get("events", []):
+        segs = ev.get("segs") or []
+        text = "".join(str(s.get("utf8") or "") for s in segs)
+        text = re.sub(r"\s+", " ", text.replace("\n", " ")).strip()
+        if not text or text == last_text:
+            continue
+        start = float(ev.get("tStartMs") or 0) / 1000.0
+        dur = float(ev.get("dDurationMs") or 0) / 1000.0
+        end = start + (dur if dur > 0 else 2.5)
+        out.append({"start": start, "end": end, "text": text, "words": []})
+        last_text = text
+    return out
+
+
+def prepare_youtube_transcript(project_id: str):
+    """Intenta preparar la búsqueda usando subtítulos de YouTube, sin ejecutar Whisper."""
+    pdir = project_dir(project_id)
+    project = read_json(pdir / "project.json") or {}
+    url = project.get("source_url")
+    if not url:
+        return False
+
+    project["transcript_status"] = "processing"
+    project["transcript_source"] = "youtube_captions"
+    project["transcript_hint"] = "Preparando subtítulos de YouTube para búsqueda…"
+    write_json(pdir / "project.json", project)
+
+    # Elimina restos de intentos previos.
+    for old in pdir.glob("captions*.json3"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+    out_tpl = str(pdir / "captions.%(ext)s")
+    cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "--no-playlist",
+        "--force-ipv4",
+        "--skip-download",
+        "--write-subs",
+        "--write-auto-subs",
+        "--sub-langs", "es.*,es,en.*",
+        "--sub-format", "json3",
+        "--js-runtimes", "deno:/usr/local/bin/deno",
+        "--extractor-args", "youtube:player_client=mweb",
+        "--extractor-args", f"youtubepot-bgutilscript:server_home={BGUTIL_SERVER}",
+        "-o", out_tpl,
+        url,
+    ]
+
+    try:
+        run(cmd, timeout=180)
+        files = list(pdir.glob("captions*.json3"))
+        # Preferencia: español manual/auto, luego inglés si fuera lo único disponible.
+        files.sort(key=lambda p: (0 if ".es" in p.name.lower() else 1, len(p.name)))
+        for path in files:
+            segments = _parse_json3(path)
+            if segments:
+                lang = "es" if ".es" in path.name.lower() else "en"
+                _save_project_transcript(project_id, segments, language=lang, source="youtube_captions")
+                print(f"[CLIPSESE] YouTube captions ready: {len(segments)} segments from {path.name}", flush=True)
+                return True
+        raise RuntimeError("YouTube no entregó subtítulos utilizables para este video")
+    except Exception as e:
+        # No tratamos esto como error del proyecto. El usuario todavía puede usar Whisper.
+        project = read_json(pdir / "project.json") or project
+        project["transcript_status"] = "not_started"
+        project["transcript_source"] = "none"
+        project["transcript_hint"] = "YouTube no entregó subtítulos. Usa “Analizar audio” para crear la búsqueda con Whisper."
+        project["transcript_error"] = str(e)[-1200:]
+        write_json(pdir / "project.json", project)
+        print(f"[CLIPSESE] captions unavailable: {type(e).__name__}: {e}", flush=True)
+        return False
 
 
 def transcribe_project(project_id: str):
     pdir = project_dir(project_id)
     project = read_json(pdir / "project.json") or {}
     project["transcript_status"] = "processing"
+    project["transcript_source"] = "whisper"
+    project["transcript_hint"] = "Analizando el audio para habilitar la búsqueda…"
     write_json(pdir / "project.json", project)
     try:
         from faster_whisper import WhisperModel
         global _model
         with _model_lock:
             if _model is None:
-                import os
                 model_name = os.getenv("WHISPER_MODEL", "base")
                 device = os.getenv("WHISPER_DEVICE", "cpu")
                 compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
@@ -34,15 +132,17 @@ def transcribe_project(project_id: str):
                 for w in s.words:
                     words.append({"start": float(w.start or s.start), "end": float(w.end or s.end), "word": w.word})
             out.append({"start": float(s.start), "end": float(s.end), "text": s.text.strip(), "words": words})
-        write_json(pdir / "transcript.json", {"language": getattr(info, "language", "es"), "segments": out})
-        project = read_json(pdir / "project.json") or project
-        project["transcript_status"] = "ready"
-        project["transcript_segments"] = len(out)
-        write_json(pdir / "project.json", project)
+        _save_project_transcript(
+            project_id,
+            out,
+            language=getattr(info, "language", "es"),
+            source="whisper",
+        )
     except Exception as e:
         project = read_json(pdir / "project.json") or project
         project["transcript_status"] = "error"
         project["transcript_error"] = str(e)
+        project["transcript_hint"] = "No se pudo analizar el audio. Puedes seguir usando búsqueda por tiempo."
         write_json(pdir / "project.json", project)
 
 
@@ -116,4 +216,4 @@ def theme_search(project_id: str, query: str, max_results=8) -> list[dict]:
         item = dict(w)
         item["score"] = round(_fallback_score(query, w["text"]), 4)
         scored.append(item)
-    return sorted(scored, key=lambda x: x["score"], reverse=True)[:max_results]
+    return [x for x in sorted(scored, key=lambda x: x["score"], reverse=True) if x["score"] > 0][:max_results]
