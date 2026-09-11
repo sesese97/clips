@@ -10,10 +10,10 @@ from fastapi.responses import FileResponse
 
 from .models import RenderRequest, SearchRequest
 from .transcribe import keyword_search, theme_search, transcribe_project
-from .utils import is_allowed_url, project_dir, read_json, runtime_diagnostics
+from .utils import is_allowed_url, project_dir, read_json, runtime_diagnostics, write_json
 from .video import add_media_upload, add_media_url, ingest_upload, ingest_youtube, render_clip
 
-app = FastAPI(title="ClipSese API", version="0.2.0")
+app = FastAPI(title="ClipSese API", version="0.3.0")
 origins = [x.strip().rstrip("/") for x in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if x.strip()]
 app.add_middleware(
     CORSMiddleware,
@@ -31,16 +31,22 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.2.0", "runtime": runtime_diagnostics()}
+    return {"ok": True, "version": "0.3.0", "runtime": runtime_diagnostics()}
 
 
 @app.post("/api/projects")
-async def create_project(file: UploadFile | None = File(default=None), youtube_url: str | None = Form(default=None)):
+async def create_project(
+    background: BackgroundTasks,
+    file: UploadFile | None = File(default=None),
+    youtube_url: str | None = Form(default=None),
+):
     if not file and not youtube_url:
         raise HTTPException(400, "Sube un archivo o pega un enlace de YouTube")
     if youtube_url and not is_allowed_url(youtube_url, youtube_only=True):
         raise HTTPException(400, "Solo se admiten URLs HTTPS de YouTube como fuente principal")
+
     pid = uuid.uuid4().hex[:16]
+
     try:
         if file:
             suffix = Path(file.filename or "video.mp4").suffix or ".mp4"
@@ -48,7 +54,21 @@ async def create_project(file: UploadFile | None = File(default=None), youtube_u
                 shutil.copyfileobj(file.file, tmp)
                 temp_path = Path(tmp.name)
             return ingest_upload(pid, temp_path, file.filename or "video")
-        return ingest_youtube(pid, youtube_url)
+
+        payload = {
+            "id": pid,
+            "status": "importing",
+            "import_stage": "queued",
+            "original_name": "YouTube",
+            "source_url": youtube_url,
+            "source_file": "",
+            "preview_file": "",
+            "metadata": {"duration": 0, "width": 0, "height": 0, "fps": "0/1"},
+            "transcript_status": "not_started",
+        }
+        write_json(project_dir(pid) / "project.json", payload)
+        background.add_task(ingest_youtube, pid, youtube_url)
+        return payload
     except Exception as e:
         print(f"[CLIPSESE] create_project ERROR: {type(e).__name__}: {e}", flush=True)
         raise HTTPException(500, str(e))
@@ -69,6 +89,8 @@ def transcribe(project_id: str, background: BackgroundTasks):
     pj = read_json(project_dir(project_id) / "project.json")
     if not pj:
         raise HTTPException(404, "Proyecto no encontrado")
+    if pj.get("status") != "ready":
+        raise HTTPException(409, "Espera a que termine la importación del video")
     background.add_task(transcribe_project, project_id)
     return {"status": "processing"}
 
