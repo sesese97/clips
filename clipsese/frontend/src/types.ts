@@ -1,5 +1,6 @@
 export type Crop = { x: number; y: number; w: number; h: number };
 export type Layout = 'one_media' | 'two_cameras' | 'two_media';
+export type MediaTransform = { fit:'contain'|'cover'; zoom:number; x:number; y:number };
 export type Project = {
   id: string;
   status: string;
