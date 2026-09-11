@@ -11,6 +11,8 @@ export type Project = {
   metadata: { duration: number; width: number; height: number; fps: string };
   transcript_status: string;
   transcript_error?: string;
+  transcript_hint?: string;
+  transcript_source?: string;
   media?: Media[];
   renders?: RenderItem[];
 };
