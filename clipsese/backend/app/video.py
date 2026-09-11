@@ -282,6 +282,32 @@ def _crop_filter(label: str, crop: Crop, width: int, height: int, out_label: str
     )
 
 
+def _media_filter(label: str, width: int, height: int, out_label: str, req: RenderRequest) -> str:
+    """Ajusta multimedia sin deformarla: encajar/llenar + zoom + paneo."""
+    aspect = width / height
+    z = req.media_zoom
+    px = (req.media_x + 1.0) / 2.0
+    py = (req.media_y + 1.0) / 2.0
+    if req.media_fit == "cover":
+        scale = (
+            f"scale=w='if(gt(a,{aspect:.8f}),-2,{width}*{z:.6f})':"
+            f"h='if(gt(a,{aspect:.8f}),{height}*{z:.6f},-2)'"
+        )
+    else:
+        scale = (
+            f"scale=w='if(gt(a,{aspect:.8f}),{width}*{z:.6f},-2)':"
+            f"h='if(gt(a,{aspect:.8f}),-2,{height}*{z:.6f})'"
+        )
+    return (
+        f"[{label}]{scale},setsar=1,"
+        f"pad=w='max(iw,{width})':h='max(ih,{height})':"
+        f"x='(ow-iw)*{px:.6f}':y='(oh-ih)*{py:.6f}':color=black,"
+        f"crop={width}:{height}:"
+        f"x='max(0,(iw-{width})*{px:.6f})':y='max(0,(ih-{height})*{py:.6f})',"
+        f"setsar=1[{out_label}]"
+    )
+
+
 def _render_source(project_id: str, req: RenderRequest, render_id: str) -> tuple[Path, float, Path | None]:
     pdir = project_dir(project_id)
     pj = read_json(pdir / "project.json") or {}
@@ -289,9 +315,6 @@ def _render_source(project_id: str, req: RenderRequest, render_id: str) -> tuple
     if pj.get("source_kind") == "youtube" and pj.get("source_url"):
         seg_start = max(0.0, req.start - 2.0)
         seg_end = req.end + 2.0
-        # Preferimos el mejor stream disponible que no sea AV1. En Railway AV1 1440p60 +
-        # dos crops + x264 puede disparar RAM; VP9/H.264 conserva la resolución/FPS y es
-        # mucho más estable. Si YouTube sólo ofrece AV1, el selector cae a cualquier codec.
         segment = _download_youtube(
             pj["source_url"],
             pdir,
@@ -309,8 +332,8 @@ def _render_source(project_id: str, req: RenderRequest, render_id: str) -> tuple
 def render_clip(project_id: str, req: RenderRequest) -> dict:
     if req.end <= req.start:
         raise ValueError("El final debe ser posterior al inicio")
-    if req.end - req.start > 30.001:
-        raise ValueError("Los clips no pueden exceder 30 segundos")
+    if req.end - req.start > 60.001:
+        raise ValueError("Los clips no pueden exceder 60 segundos")
     if req.layout in {"two_cameras", "two_media"} and req.camera2 is None:
         raise ValueError("El layout requiere cámara 2")
     if req.layout in {"one_media", "two_media"} and not req.media_id and req.content is None:
@@ -323,8 +346,6 @@ def render_clip(project_id: str, req: RenderRequest) -> dict:
     src, local_seek, temp_master = _render_source(project_id, req, render_id)
 
     try:
-        # Limitar hilos es intencional: el contenedor Railway es pequeño. x264 había llegado
-        # a crear ~60 threads y el proceso moría antes del primer frame en 1440p60.
         cmd = ["ffmpeg", "-y", "-threads", "2", "-ss", f"{local_seek:.3f}", "-t", f"{duration:.3f}", "-i", str(src)]
         media_item = None
         if req.media_id:
@@ -356,7 +377,7 @@ def render_clip(project_id: str, req: RenderRequest) -> dict:
 
         if req.layout == "one_media":
             if media_item:
-                filters.append("[1:v]scale=1080:1200:force_original_aspect_ratio=increase,crop=1080:1200,setsar=1[media]")
+                filters.append(_media_filter("1:v", 1080, 1200, "media", req))
             else:
                 filters.append(_crop_filter("s1", req.content, 1080, 1200, "media"))
             filters.append("[cam1][media]vstack=inputs=2[outv]")
@@ -367,7 +388,7 @@ def render_clip(project_id: str, req: RenderRequest) -> dict:
             filters.append(_crop_filter("s1", req.camera2, 540, 720, "cam2"))
             filters.append("[cam1][cam2]hstack=inputs=2[top]")
             if media_item:
-                filters.append("[1:v]scale=1080:1200:force_original_aspect_ratio=increase,crop=1080:1200,setsar=1[media]")
+                filters.append(_media_filter("1:v", 1080, 1200, "media", req))
             else:
                 filters.append(_crop_filter("s2", req.content, 1080, 1200, "media"))
             filters.append("[top][media]vstack=inputs=2[outv]")
