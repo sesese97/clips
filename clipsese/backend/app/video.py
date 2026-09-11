@@ -57,8 +57,6 @@ def _youtube_cmd(
         "-f", format_selector,
     ]
 
-    # PO Token bajo demanda. No levanta un segundo servidor permanente: el plugin invoca
-    # el generador Deno solamente cuando yt-dlp lo necesita.
     if use_pot:
         cmd += [
             "--extractor-args", "youtube:player_client=mweb",
@@ -135,9 +133,7 @@ def _download_youtube(
             low = str(e).lower()
             if not any(x in low for x in ("sign in to confirm", "not a bot", "login_required", "403", "429", "po token")):
                 if "javascript runtime" in low or "js challenge" in low:
-                    raise RuntimeError(
-                        "El runtime de YouTube no quedó disponible en el contenedor."
-                    ) from e
+                    raise RuntimeError("El runtime de YouTube no quedó disponible en el contenedor.") from e
                 raise RuntimeError(f"YouTube no pudo importarse: {str(e)[-1800:]}") from e
 
     raise RuntimeError(
@@ -174,9 +170,6 @@ def ingest_youtube(project_id: str, url: str) -> dict:
     pdir = project_dir(project_id)
     try:
         _set_import_state(project_id, status="importing", stage="connecting", error="")
-
-        # Preferimos un MP4 progresivo pequeño para que el navegador lo reproduzca sin
-        # recodificar 30-60 minutos completos en Railway.
         _set_import_state(project_id, stage="preparing_proxy")
         preview_source = _download_youtube(
             url,
@@ -212,8 +205,6 @@ def ingest_youtube(project_id: str, url: str) -> dict:
             "original_name": "YouTube",
             "source_kind": "youtube",
             "source_url": url,
-            # No guardamos un master completo de YouTube. Se obtiene el tramo máximo 30 s
-            # desde la mejor calidad disponible cuando el usuario exporta.
             "source_file": "",
             "preview_file": preview_name,
             "metadata": meta,
@@ -230,16 +221,15 @@ def ingest_youtube(project_id: str, url: str) -> dict:
 
 def _make_proxy(src: Path, dest: Path):
     run([
-        "ffmpeg", "-y", "-i", str(src),
-        "-vf", "scale='min(960,iw)':-2,fps=30",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+        "ffmpeg", "-y", "-threads", "2", "-i", str(src),
+        "-vf", "scale='min(960,iw)':-2,fps=30,setsar=1",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-threads", "2",
         "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
         str(dest)
     ], timeout=1800)
 
 
 def source_path(project_id: str) -> Path:
-    """Fuente para análisis/transcripción. YouTube usa el proxy ligero con el mismo audio."""
     pdir = project_dir(project_id)
     pj = read_json(pdir / "project.json") or {}
     name = pj.get("source_file") or pj.get("preview_file")
@@ -264,7 +254,6 @@ def add_media_upload(project_id: str, src: Path, original_name: str) -> dict:
 def add_media_url(project_id: str, url: str) -> dict:
     pdir = project_dir(project_id)
     mid = uuid.uuid4().hex[:12]
-    # Para multimedia remota preferimos un archivo moderado: sólo se usa dentro de un clip.
     dest = _download_youtube(
         url,
         pdir,
@@ -289,24 +278,25 @@ def _crop_filter(label: str, crop: Crop, width: int, height: int, out_label: str
     return (
         f"[{label}]crop=iw*{crop.w:.8f}:ih*{crop.h:.8f}:iw*{crop.x:.8f}:ih*{crop.y:.8f},"
         f"scale={width}:{height}:force_original_aspect_ratio=increase,"
-        f"crop={width}:{height}[{out_label}]"
+        f"crop={width}:{height},setsar=1[{out_label}]"
     )
 
 
 def _render_source(project_id: str, req: RenderRequest, render_id: str) -> tuple[Path, float, Path | None]:
-    """Devuelve (archivo, seek_local, temporal_a_borrar)."""
     pdir = project_dir(project_id)
     pj = read_json(pdir / "project.json") or {}
 
     if pj.get("source_kind") == "youtube" and pj.get("source_url"):
-        # Margen para que el seek/corte final tenga suficiente contexto alrededor del clip.
         seg_start = max(0.0, req.start - 2.0)
         seg_end = req.end + 2.0
+        # Preferimos el mejor stream disponible que no sea AV1. En Railway AV1 1440p60 +
+        # dos crops + x264 puede disparar RAM; VP9/H.264 conserva la resolución/FPS y es
+        # mucho más estable. Si YouTube sólo ofrece AV1, el selector cae a cualquier codec.
         segment = _download_youtube(
             pj["source_url"],
             pdir,
             f"master_{render_id}",
-            format_selector="bv*+ba/b",
+            format_selector="bv*[vcodec!^=av01]+ba/bv*+ba/b",
             section=(seg_start, seg_end),
             timeout=900,
         )
@@ -333,7 +323,9 @@ def render_clip(project_id: str, req: RenderRequest) -> dict:
     src, local_seek, temp_master = _render_source(project_id, req, render_id)
 
     try:
-        cmd = ["ffmpeg", "-y", "-ss", f"{local_seek:.3f}", "-t", f"{duration:.3f}", "-i", str(src)]
+        # Limitar hilos es intencional: el contenedor Railway es pequeño. x264 había llegado
+        # a crear ~60 threads y el proceso moría antes del primer frame en 1440p60.
+        cmd = ["ffmpeg", "-y", "-threads", "2", "-ss", f"{local_seek:.3f}", "-t", f"{duration:.3f}", "-i", str(src)]
         media_item = None
         if req.media_id:
             media = read_json(pdir / "media.json", []) or []
@@ -364,7 +356,7 @@ def render_clip(project_id: str, req: RenderRequest) -> dict:
 
         if req.layout == "one_media":
             if media_item:
-                filters.append("[1:v]scale=1080:1200:force_original_aspect_ratio=increase,crop=1080:1200[media]")
+                filters.append("[1:v]scale=1080:1200:force_original_aspect_ratio=increase,crop=1080:1200,setsar=1[media]")
             else:
                 filters.append(_crop_filter("s1", req.content, 1080, 1200, "media"))
             filters.append("[cam1][media]vstack=inputs=2[outv]")
@@ -375,19 +367,34 @@ def render_clip(project_id: str, req: RenderRequest) -> dict:
             filters.append(_crop_filter("s1", req.camera2, 540, 720, "cam2"))
             filters.append("[cam1][cam2]hstack=inputs=2[top]")
             if media_item:
-                filters.append("[1:v]scale=1080:1200:force_original_aspect_ratio=increase,crop=1080:1200[media]")
+                filters.append("[1:v]scale=1080:1200:force_original_aspect_ratio=increase,crop=1080:1200,setsar=1[media]")
             else:
                 filters.append(_crop_filter("s2", req.content, 1080, 1200, "media"))
             filters.append("[top][media]vstack=inputs=2[outv]")
 
         cmd += [
+            "-filter_complex_threads", "1",
             "-filter_complex", ";".join(filters),
             "-map", "[outv]", "-map", "0:a?",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "17", "-profile:v", "high",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-profile:v", "high",
+            "-threads", "2", "-x264-params", "threads=2:lookahead_threads=1",
             "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k",
             "-movflags", "+faststart", "-shortest", str(out)
         ]
-        run(cmd, timeout=1800)
+        try:
+            run(cmd, timeout=1800)
+        except CommandError as e:
+            if out.exists():
+                try:
+                    out.unlink()
+                except OSError:
+                    pass
+            print(f"[CLIPSESE] ffmpeg render failed: {str(e)[-1800:]}", flush=True)
+            raise RuntimeError(
+                "No se pudo terminar el render en el servidor. ClipSese ya descargó el tramo en máxima calidad, "
+                "pero FFmpeg se quedó sin recursos o falló al codificar. Intenta exportar nuevamente."
+            ) from e
+
         info = ffprobe(out)
         item = {"id": render_id, "file": out.name, "metadata": info, "start": req.start, "end": req.end, "layout": req.layout}
         renders = read_json(pdir / "renders.json", []) or []
