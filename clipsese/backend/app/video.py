@@ -1,13 +1,24 @@
-import json
-import math
+import base64
+import os
 import shutil
-import subprocess
 import sys
 import uuid
 from pathlib import Path
 
 from .models import Crop, RenderRequest
-from .utils import ffprobe, project_dir, read_json, run, write_json
+from .utils import CommandError, ffprobe, project_dir, read_json, run, write_json
+
+
+def _cookie_file() -> Path | None:
+    raw = os.getenv("YOUTUBE_COOKIES_B64", "").strip()
+    if not raw:
+        return None
+    path = Path("/tmp/clipsese_youtube_cookies.txt")
+    try:
+        path.write_bytes(base64.b64decode(raw, validate=True))
+        return path
+    except Exception as e:
+        raise RuntimeError("YOUTUBE_COOKIES_B64 existe pero no es Base64 válido") from e
 
 
 def _download_with_ytdlp(url: str, out_dir: Path, stem: str) -> Path:
@@ -15,15 +26,44 @@ def _download_with_ytdlp(url: str, out_dir: Path, stem: str) -> Path:
     cmd = [
         sys.executable, "-m", "yt_dlp",
         "--no-playlist",
+        "--force-ipv4",
+        "--retries", "3",
+        "--fragment-retries", "3",
+        "--js-runtimes", "deno:/usr/local/bin/deno",
         "--merge-output-format", "mp4",
-        "-f", "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]/best",
+        "-f", "bv*+ba/b",
         "-o", out_tpl,
-        url,
     ]
-    run(cmd)
-    candidates = sorted(out_dir.glob(f"{stem}.*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    cookies = _cookie_file()
+    if cookies:
+        cmd += ["--cookies", str(cookies)]
+    cmd.append(url)
+
+    try:
+        run(cmd, timeout=900)
+    except CommandError as e:
+        msg = str(e)
+        low = msg.lower()
+        if "sign in to confirm" in low or "not a bot" in low or "login_required" in low:
+            raise RuntimeError(
+                "YouTube bloqueó la IP del servidor de Railway y pide autenticación. "
+                "La herramienta sí está conectada. Para este video usa Archivo original o configura "
+                "YOUTUBE_COOKIES_B64 en Railway para contenido propio."
+            ) from e
+        if "javascript runtime" in low or "js challenge" in low:
+            raise RuntimeError(
+                "El runtime de YouTube no quedó disponible en el contenedor. "
+                "Abre /api/health para comprobar Deno y yt-dlp."
+            ) from e
+        raise RuntimeError(f"YouTube no pudo importarse: {msg[-1800:]}") from e
+
+    candidates = [
+        p for p in out_dir.glob(f"{stem}.*")
+        if p.is_file() and not p.name.endswith((".part", ".ytdl"))
+    ]
+    candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
     if not candidates:
-        raise RuntimeError("No se pudo descargar el video.")
+        raise RuntimeError("yt-dlp terminó sin crear un archivo de video.")
     return candidates[0]
 
 
@@ -73,7 +113,7 @@ def _make_proxy(src: Path, dest: Path):
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
         "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
         str(dest)
-    ])
+    ], timeout=1800)
 
 
 def source_path(project_id: str) -> Path:
@@ -116,7 +156,6 @@ def _media_type(path: Path) -> str:
 
 
 def _crop_filter(label: str, crop: Crop, width: int, height: int, out_label: str) -> str:
-    # Crop coordinates are normalized to the source frame. Scale keeps aspect ratio, then center-crops to the target box.
     return (
         f"[{label}]crop=iw*{crop.w:.8f}:ih*{crop.h:.8f}:iw*{crop.x:.8f}:ih*{crop.y:.8f},"
         f"scale={width}:{height}:force_original_aspect_ratio=increase,"
@@ -154,7 +193,6 @@ def render_clip(project_id: str, req: RenderRequest) -> dict:
             cmd += ["-stream_loop", "-1", "-i", str(mpath)]
 
     filters: list[str] = []
-    # Split the source video so each crop gets an independent input stream.
     if req.layout == "one_media":
         source_copies = 2 if not media_item else 1
     elif req.layout == "two_cameras":
@@ -176,12 +214,10 @@ def render_clip(project_id: str, req: RenderRequest) -> dict:
         else:
             filters.append(_crop_filter("s1", req.content, 1080, 1200, "media"))
         filters.append("[cam1][media]vstack=inputs=2[outv]")
-
     elif req.layout == "two_cameras":
         filters.append(_crop_filter("s1", req.camera2, 1080, 960, "cam2"))
         filters.append("[cam1][cam2]vstack=inputs=2[outv]")
-
-    else:  # two_media
+    else:
         filters.append(_crop_filter("s1", req.camera2, 540, 720, "cam2"))
         filters.append("[cam1][cam2]hstack=inputs=2[top]")
         if media_item:
@@ -193,11 +229,11 @@ def render_clip(project_id: str, req: RenderRequest) -> dict:
     cmd += [
         "-filter_complex", ";".join(filters),
         "-map", "[outv]", "-map", "0:a?",
-        "-c:v", "libx264", "-preset", "slow", "-crf", "17", "-profile:v", "high",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "17", "-profile:v", "high",
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k",
         "-movflags", "+faststart", "-shortest", str(out)
     ]
-    run(cmd)
+    run(cmd, timeout=1800)
     info = ffprobe(out)
     item = {"id": render_id, "file": out.name, "metadata": info, "start": req.start, "end": req.end, "layout": req.layout}
     renders = read_json(pdir / "renders.json", []) or []
