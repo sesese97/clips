@@ -21,6 +21,20 @@ def _cookie_file() -> Path | None:
         raise RuntimeError("YOUTUBE_COOKIES_B64 existe pero no es Base64 válido") from e
 
 
+def _set_import_state(project_id: str, *, status: str | None = None, stage: str | None = None, error: str | None = None, **extra):
+    pdir = project_dir(project_id)
+    data = read_json(pdir / "project.json") or {"id": project_id}
+    if status is not None:
+        data["status"] = status
+    if stage is not None:
+        data["import_stage"] = stage
+    if error is not None:
+        data["import_error"] = error
+    data.update(extra)
+    write_json(pdir / "project.json", data)
+    return data
+
+
 def _download_with_ytdlp(url: str, out_dir: Path, stem: str) -> Path:
     out_tpl = str(out_dir / f"{stem}.%(ext)s")
     cmd = [
@@ -31,7 +45,10 @@ def _download_with_ytdlp(url: str, out_dir: Path, stem: str) -> Path:
         "--fragment-retries", "3",
         "--js-runtimes", "deno:/usr/local/bin/deno",
         "--merge-output-format", "mp4",
-        "-f", "bv*+ba/b",
+        "-f",
+        "bv*[height<=1080][vcodec^=avc1]+ba[acodec^=mp4a]/"
+        "bv*[height<=1080][vcodec^=avc1]+ba/"
+        "b[height<=1080][ext=mp4]/b[height<=1080]",
         "-o", out_tpl,
     ]
     cookies = _cookie_file()
@@ -77,6 +94,7 @@ def ingest_upload(project_id: str, src: Path, original_name: str) -> dict:
     payload = {
         "id": project_id,
         "status": "ready",
+        "import_stage": "ready",
         "original_name": original_name,
         "source_file": dest.name,
         "preview_file": "preview.mp4",
@@ -89,29 +107,55 @@ def ingest_upload(project_id: str, src: Path, original_name: str) -> dict:
 
 def ingest_youtube(project_id: str, url: str) -> dict:
     pdir = project_dir(project_id)
-    source = _download_with_ytdlp(url, pdir, "source")
-    meta = ffprobe(source)
-    _make_proxy(source, pdir / "preview.mp4")
-    payload = {
-        "id": project_id,
-        "status": "ready",
-        "original_name": "YouTube",
-        "source_url": url,
-        "source_file": source.name,
-        "preview_file": "preview.mp4",
-        "metadata": meta,
-        "transcript_status": "not_started",
-    }
-    write_json(pdir / "project.json", payload)
-    return payload
+    try:
+        _set_import_state(project_id, status="importing", stage="downloading")
+        source = _download_with_ytdlp(url, pdir, "source")
+
+        _set_import_state(project_id, stage="analyzing")
+        meta = ffprobe(source)
+
+        # Para YouTube pedimos H.264/AAC hasta 1080p. Si llega así, el mismo archivo sirve
+        # como preview y evitamos recodificar 30-60 minutos de video en Railway.
+        browser_ready = (
+            source.suffix.lower() == ".mp4"
+            and meta.get("video_codec") == "h264"
+            and meta.get("audio_codec") in {"aac", None}
+        )
+
+        if browser_ready:
+            preview_name = source.name
+        else:
+            _set_import_state(project_id, stage="preparing_preview")
+            preview_path = pdir / "preview.mp4"
+            _make_proxy(source, preview_path)
+            preview_name = preview_path.name
+
+        payload = {
+            "id": project_id,
+            "status": "ready",
+            "import_stage": "ready",
+            "original_name": "YouTube",
+            "source_url": url,
+            "source_file": source.name,
+            "preview_file": preview_name,
+            "metadata": meta,
+            "transcript_status": "not_started",
+        }
+        write_json(pdir / "project.json", payload)
+        return payload
+    except Exception as e:
+        message = str(e)
+        _set_import_state(project_id, status="error", stage="error", error=message)
+        print(f"[CLIPSESE] ingest_youtube ERROR: {type(e).__name__}: {message}", flush=True)
+        raise
 
 
 def _make_proxy(src: Path, dest: Path):
     run([
         "ffmpeg", "-y", "-i", str(src),
-        "-vf", "scale='min(1280,iw)':-2",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
-        "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
+        "-vf", "scale='min(960,iw)':-2,fps=30",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+        "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
         str(dest)
     ], timeout=1800)
 
