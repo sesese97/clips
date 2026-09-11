@@ -8,12 +8,13 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from .football_search import keyword_search, theme_search
 from .models import RenderRequest, SearchRequest
-from .transcribe import keyword_search, prepare_youtube_transcript, theme_search, transcribe_project
+from .transcribe import prepare_youtube_transcript, transcribe_project
 from .utils import is_allowed_url, project_dir, read_json, runtime_diagnostics, write_json
 from .video import add_media_upload, add_media_url, ingest_upload, ingest_youtube, render_clip
 
-app = FastAPI(title="ClipSese API", version="0.4.0")
+app = FastAPI(title="ClipSese API", version="0.4.1")
 
 origins = [
     x.strip().rstrip("/")
@@ -37,8 +38,6 @@ app.add_middleware(
 def _ingest_youtube_job(project_id: str, url: str):
     result = ingest_youtube(project_id, url)
     if result.get("status") == "ready":
-        # En YouTube intentamos dejar lista la búsqueda automáticamente usando captions.
-        # Si no existen, el proyecto sigue listo y el usuario puede activar Whisper manualmente.
         prepare_youtube_transcript(project_id)
 
 
@@ -49,7 +48,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.4.0", "runtime": runtime_diagnostics()}
+    return {"ok": True, "version": "0.4.1", "runtime": runtime_diagnostics()}
 
 
 @app.post("/api/projects")
