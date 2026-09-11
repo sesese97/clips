@@ -52,7 +52,7 @@ def _caption_cmd(url: str, out_tpl: str, *, mode: str) -> list[str]:
         "--skip-download",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "es.*,es,en.*,en",
+        "--sub-langs", "es-orig,es.*,es,en-orig,en.*,en",
         "--sub-format", "json3",
         "--js-runtimes", "deno:/usr/local/bin/deno",
     ]
@@ -73,19 +73,79 @@ def _caption_cmd(url: str, out_tpl: str, *, mode: str) -> list[str]:
     return cmd
 
 
+def _caption_priority(path: Path) -> tuple[int, int]:
+    name = path.name.lower()
+    # El track *-orig es la transcripción del audio real. El track .es puede ser una
+    # traducción automática y suele deformar todavía más los nombres propios NFL.
+    if ".es-orig." in name:
+        return (0, len(name))
+    if ".es." in name:
+        return (1, len(name))
+    if ".en-orig." in name:
+        return (2, len(name))
+    if ".en." in name:
+        return (3, len(name))
+    return (4, len(name))
+
+
+def _merge_caption_search_text(primary: list[dict], alternates: list[list[dict]]) -> list[dict]:
+    """Conserva el texto original para mostrarlo, pero indexa también tracks alternativos.
+
+    YouTube puede escribir bien un apellido en es-orig y mal en es, o al revés. Para búsqueda
+    usamos ambos sin llenar la UI de subtítulos duplicados.
+    """
+    if not alternates:
+        return primary
+
+    pointers = [0 for _ in alternates]
+    merged: list[dict] = []
+    for seg in primary:
+        item = dict(seg)
+        pieces = [seg.get("text", "")]
+        center = (float(seg.get("start", 0)) + float(seg.get("end", 0))) / 2
+
+        for ai, alt in enumerate(alternates):
+            p = pointers[ai]
+            while p + 1 < len(alt) and float(alt[p + 1].get("start", 0)) <= center:
+                p += 1
+            pointers[ai] = p
+            candidates = alt[max(0, p - 1): min(len(alt), p + 2)]
+            for other in candidates:
+                ostart = float(other.get("start", 0))
+                oend = float(other.get("end", ostart + 2.5))
+                if ostart - 1.25 <= center <= oend + 1.25:
+                    txt = other.get("text", "")
+                    if txt and txt not in pieces:
+                        pieces.append(txt)
+
+        item["search_text"] = " | ".join(pieces)
+        merged.append(item)
+    return merged
+
+
 def _load_caption_files(project_id: str) -> bool:
     pdir = project_dir(project_id)
-    files = list(pdir.glob("captions*.json3"))
-    # Español primero; si el video sólo ofrece inglés, al menos la búsqueda sigue funcionando.
-    files.sort(key=lambda p: (0 if ".es" in p.name.lower() else 1, len(p.name)))
+    files = sorted(list(pdir.glob("captions*.json3")), key=_caption_priority)
+    parsed: list[tuple[Path, list[dict]]] = []
     for path in files:
         segments = _parse_json3(path)
         if segments:
-            lang = "es" if ".es" in path.name.lower() else "en"
-            _save_project_transcript(project_id, segments, language=lang, source="youtube_captions")
-            print(f"[CLIPSESE] YouTube captions ready: {len(segments)} segments from {path.name}", flush=True)
-            return True
-    return False
+            parsed.append((path, segments))
+
+    if not parsed:
+        return False
+
+    primary_path, primary = parsed[0]
+    alternates = [segments for _, segments in parsed[1:4]]
+    primary = _merge_caption_search_text(primary, alternates)
+    name = primary_path.name.lower()
+    lang = "es" if ".es" in name else "en"
+    _save_project_transcript(project_id, primary, language=lang, source="youtube_captions")
+    print(
+        f"[CLIPSESE] YouTube captions ready: {len(primary)} segments; primary={primary_path.name}; alternates={len(alternates)}",
+        flush=True,
+    )
+    return True
 
 
 def prepare_youtube_transcript(project_id: str):
@@ -121,9 +181,6 @@ def prepare_youtube_transcript(project_id: str):
         except Exception as e:
             errors.append(f"{mode}: {str(e)[-500:]}")
 
-    # Los captions pueden no existir, estar desactivados o quedar bloqueados por YouTube.
-    # Para el usuario la búsqueda debe funcionar de todos modos, así que hacemos Whisper
-    # automáticamente sobre el proxy ligero ya descargado en vez de exigir otro botón.
     project = read_json(pdir / "project.json") or project
     project["transcript_status"] = "processing"
     project["transcript_source"] = "whisper"
@@ -194,6 +251,10 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _searchable_text(segment: dict) -> str:
+    return str(segment.get("search_text") or segment.get("text") or "")
+
+
 def _window_for_hit(segments: list[dict], idx: int, max_len=30.0) -> dict:
     hit = segments[idx]
     center = (hit["start"] + hit["end"]) / 2
@@ -214,6 +275,19 @@ def _token_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+def _token_threshold(token: str) -> float:
+    n = len(token)
+    if n >= 8:
+        return 0.60
+    if n >= 6:
+        return 0.64
+    if n == 5:
+        return 0.70
+    if n == 4:
+        return 0.78
+    return 1.0
+
+
 def _fuzzy_query_score(query: str, text: str) -> float:
     nq = _norm(query)
     nt = _norm(text)
@@ -227,26 +301,42 @@ def _fuzzy_query_score(query: str, text: str) -> float:
     if not q_tokens or not t_tokens:
         return 0.0
 
-    per_token = []
+    bests = []
     for q in q_tokens:
-        per_token.append(max((_token_similarity(q, t) for t in t_tokens), default=0.0))
-    return sum(per_token) / len(per_token)
+        best = max((_token_similarity(q, t) for t in t_tokens), default=0.0)
+        if best < _token_threshold(q):
+            best = 0.0
+        bests.append(best)
+
+    # Para nombre+apellido permitimos que un apellido muy claro rescate un primer nombre mal
+    # subtitulado. Para una sola palabra exigimos que ella misma supere el umbral adaptativo.
+    if len(q_tokens) == 1:
+        return bests[0]
+    strong = [x for x in bests if x > 0]
+    if not strong:
+        return 0.0
+    coverage = len(strong) / len(bests)
+    quality = sum(strong) / len(strong)
+    if coverage < 0.5:
+        return 0.0
+    return min(0.99, quality * 0.72 + coverage * 0.28)
 
 
 def keyword_search(project_id: str, query: str, max_results=8) -> list[dict]:
-    """Busca nombres/palabras con coincidencia exacta y tolerancia a errores de subtitulado."""
+    """Busca nombres/palabras aun cuando los captions deformen ligeramente el apellido."""
     tr = read_json(project_dir(project_id) / "transcript.json") or {}
     segments = tr.get("segments", [])
     scored_hits: list[tuple[float, int]] = []
 
+    nq = _norm(query)
+    one_token = len(nq.split()) == 1
+    min_score = _token_threshold(nq) if one_token else 0.62
+
     for i, s in enumerate(segments):
-        score = _fuzzy_query_score(query, s.get("text", ""))
-        # 0.80 tolera cosas como Javonte/Javonté o pequeños errores del ASR,
-        # sin convertir cualquier palabra vagamente parecida en un resultado.
-        if score >= 0.80:
+        score = _fuzzy_query_score(query, _searchable_text(s))
+        if score >= min_score:
             scored_hits.append((score, i))
 
-    # Primero mejor coincidencia, luego tiempo. Al construir ventanas eliminamos duplicados cercanos.
     scored_hits.sort(key=lambda x: (-x[0], segments[x[1]].get("start", 0)))
     hits = []
     used_starts: list[float] = []
@@ -271,9 +361,15 @@ def _make_windows(segments: list[dict], width=26.0, stride=16.0) -> list[dict]:
     t = 0.0
     while t < end_all:
         e = t + width
-        texts = [s["text"] for s in segments if s["end"] >= t and s["start"] <= e]
-        if texts:
-            windows.append({"start": t, "end": min(e, end_all), "text": " ".join(texts).strip()})
+        visible = [s["text"] for s in segments if s["end"] >= t and s["start"] <= e]
+        searchable = [_searchable_text(s) for s in segments if s["end"] >= t and s["start"] <= e]
+        if visible:
+            windows.append({
+                "start": t,
+                "end": min(e, end_all),
+                "text": " ".join(visible).strip(),
+                "search_text": " ".join(searchable).strip(),
+            })
         t += stride
     return windows
 
@@ -293,9 +389,13 @@ def _theme_score(query: str, text: str) -> float:
 
     scores = []
     for q in q_tokens:
-        scores.append(max((_token_similarity(q, t) for t in t_tokens), default=0.0))
+        best = max((_token_similarity(q, t) for t in t_tokens), default=0.0)
+        if best >= max(0.68, _token_threshold(q) - 0.02):
+            scores.append(best)
+        else:
+            scores.append(0.0)
 
-    strong = [s for s in scores if s >= 0.78]
+    strong = [s for s in scores if s > 0]
     if not strong:
         return 0.0
     coverage = len(strong) / len(q_tokens)
@@ -304,15 +404,13 @@ def _theme_score(query: str, text: str) -> float:
 
 
 def theme_search(project_id: str, query: str, max_results=8) -> list[dict]:
-    """Búsqueda temática ligera: ventanas de 26 s + coincidencia tolerante de conceptos/palabras."""
     tr = read_json(project_dir(project_id) / "transcript.json") or {}
     windows = _make_windows(tr.get("segments", []))
     scored = []
     for w in windows:
-        score = _theme_score(query, w["text"])
+        score = _theme_score(query, w.get("search_text", w["text"]))
         if score <= 0:
             continue
-        item = dict(w)
-        item["score"] = round(score, 4)
+        item = {"start": w["start"], "end": w["end"], "text": w["text"], "score": round(score, 4)}
         scored.append(item)
     return sorted(scored, key=lambda x: x["score"], reverse=True)[:max_results]
