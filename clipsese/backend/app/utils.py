@@ -9,7 +9,25 @@ STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, check=True, capture_output=True, text=True)
+    print("EJECUTANDO:", " ".join(str(x) for x in cmd), flush=True)
+
+    cp = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True
+    )
+
+    if cp.stdout:
+        print("STDOUT:", cp.stdout, flush=True)
+
+    if cp.stderr:
+        print("STDERR:", cp.stderr, flush=True)
+
+    if cp.returncode != 0:
+        error = cp.stderr.strip() or cp.stdout.strip() or f"Proceso terminó con código {cp.returncode}"
+        raise RuntimeError(error[-5000:])
+
+    return cp
 
 
 def ffprobe(path: Path) -> dict:
