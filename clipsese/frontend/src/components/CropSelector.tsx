@@ -11,8 +11,8 @@ type Props = {
 };
 
 type Gesture =
-  | {type:'draw';start:{x:number;y:number}}
-  | {type:'move'|'resize';start:{x:number;y:number};original:Crop}
+  | {type:'draw';name:string;start:{x:number;y:number}}
+  | {type:'move'|'resize';name:string;start:{x:number;y:number};original:Crop}
   | null;
 
 const labels: Record<string,string> = {camera1:'Cámara 1',camera2:'Cámara 2',content:'Contenido'};
@@ -30,13 +30,13 @@ export default function CropSelector({videoUrl,currentTime,crops,active,onActive
   function backgroundDown(e:React.PointerEvent){
     if((e.target as HTMLElement).closest('.crop-box'))return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    setGesture({type:'draw',start:point(e)});
+    setGesture({type:'draw',name:active,start:point(e)});
   }
   function boxDown(e:React.PointerEvent,name:string,type:'move'|'resize'){
     e.stopPropagation();
     onActive(name);
     wrap.current?.setPointerCapture(e.pointerId);
-    setGesture({type,start:point(e),original:{...crops[name]}});
+    setGesture({type,name,start:point(e),original:{...crops[name]}});
   }
   function move(e:React.PointerEvent){
     if(!gesture)return;
@@ -44,7 +44,7 @@ export default function CropSelector({videoUrl,currentTime,crops,active,onActive
     if(gesture.type==='draw'){
       const x=Math.min(gesture.start.x,p.x), y=Math.min(gesture.start.y,p.y);
       const w=Math.max(.03,Math.abs(p.x-gesture.start.x)), h=Math.max(.03,Math.abs(p.y-gesture.start.y));
-      onCrop(active,{x,y,w:Math.min(w,1-x),h:Math.min(h,1-y)});
+      onCrop(gesture.name,{x,y,w:Math.min(w,1-x),h:Math.min(h,1-y)});
       return;
     }
     const dx=p.x-gesture.start.x,dy=p.y-gesture.start.y;
@@ -52,11 +52,11 @@ export default function CropSelector({videoUrl,currentTime,crops,active,onActive
     if(gesture.type==='move'){
       const x=Math.max(0,Math.min(1-o.w,o.x+dx));
       const y=Math.max(0,Math.min(1-o.h,o.y+dy));
-      onCrop(active,{...o,x,y});
+      onCrop(gesture.name,{...o,x,y});
     }else{
       const w=Math.max(.03,Math.min(1-o.x,o.w+dx));
       const h=Math.max(.03,Math.min(1-o.y,o.h+dy));
-      onCrop(active,{...o,w,h});
+      onCrop(gesture.name,{...o,w,h});
     }
   }
   function up(){setGesture(null)}
