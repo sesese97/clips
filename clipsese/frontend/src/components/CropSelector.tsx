@@ -29,17 +29,26 @@ export default function CropSelector({videoUrl,currentTime,crops,active,onActive
   }
   function backgroundDown(e:React.PointerEvent){
     if((e.target as HTMLElement).closest('.crop-box'))return;
+    // Fuera de los cuadros sí permitimos dibujar uno nuevo. Evitamos selección de texto/drag
+    // nativo del navegador, pero los controles del video siguen funcionando con clic normal.
+    if((e.target as HTMLElement).closest('video') && (e.target as HTMLElement).tagName!=='VIDEO')return;
+    e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
     setGesture({type:'draw',name:active,start:point(e)});
   }
-  function boxDown(e:React.PointerEvent,name:string,type:'move'|'resize'){
+  function boxDown(e:React.PointerEvent<HTMLElement>,name:string,type:'move'|'resize'){
+    // Clave: el gesto pertenece al cuadro, no al <video> que está debajo. Sin esto Chrome
+    // intenta seleccionar/arrastrar la capa de video mientras movemos el crop.
+    e.preventDefault();
     e.stopPropagation();
     onActive(name);
-    wrap.current?.setPointerCapture(e.pointerId);
+    e.currentTarget.setPointerCapture(e.pointerId);
     setGesture({type,name,start:point(e),original:{...crops[name]}});
   }
   function move(e:React.PointerEvent){
     if(!gesture)return;
+    e.preventDefault();
+    e.stopPropagation();
     const p=point(e);
     if(gesture.type==='draw'){
       const x=Math.min(gesture.start.x,p.x), y=Math.min(gesture.start.y,p.y);
@@ -59,18 +68,38 @@ export default function CropSelector({videoUrl,currentTime,crops,active,onActive
       onCrop(gesture.name,{...o,w,h});
     }
   }
-  function up(){setGesture(null)}
+  function up(e?:React.PointerEvent){
+    if(e) e.preventDefault();
+    setGesture(null);
+  }
   function sync(){ if(video.current && Math.abs(video.current.currentTime-currentTime)>.4) video.current.currentTime=currentTime; }
 
   return <div>
     <div className="crop-tabs">{cropKeys.filter(k=>crops[k]).map(k=><button key={k} className={active===k?'active':''} onClick={()=>onActive(k)}>{labels[k]}</button>)}</div>
-    <div className="video-crop-wrap" ref={wrap} onPointerDown={backgroundDown} onPointerMove={move} onPointerUp={up} onPointerCancel={up}>
-      <video ref={video} src={videoUrl} controls onLoadedMetadata={sync} onSeeked={sync}/>
+    <div
+      className="video-crop-wrap"
+      ref={wrap}
+      onPointerDown={backgroundDown}
+      onPointerMove={move}
+      onPointerUp={up}
+      onPointerCancel={up}
+      onDragStart={e=>e.preventDefault()}
+      style={{userSelect:'none',WebkitUserSelect:'none'}}
+    >
+      <video ref={video} src={videoUrl} controls draggable={false} onDragStart={e=>e.preventDefault()} onLoadedMetadata={sync} onSeeked={sync}/>
       {cropKeys.filter(k=>crops[k]).map(k=>{
         const c=crops[k];
-        return <div key={k} data-crop={k} className={`crop-box ${active===k?'selected':''}`} onPointerDown={e=>boxDown(e,k,'move')} style={{left:`${c.x*100}%`,top:`${c.y*100}%`,width:`${c.w*100}%`,height:`${c.h*100}%`}}>
+        return <div
+          key={k}
+          data-crop={k}
+          draggable={false}
+          className={`crop-box ${active===k?'selected':''}`}
+          onPointerDown={e=>boxDown(e,k,'move')}
+          onDragStart={e=>e.preventDefault()}
+          style={{left:`${c.x*100}%`,top:`${c.y*100}%`,width:`${c.w*100}%`,height:`${c.h*100}%`}}
+        >
           <span>{labels[k]}</span>
-          {active===k&&<i className="crop-resize" onPointerDown={e=>boxDown(e,k,'resize')}/>} 
+          {active===k&&<i className="crop-resize" draggable={false} onPointerDown={e=>boxDown(e,k,'resize')}/>} 
         </div>;
       })}
     </div>
