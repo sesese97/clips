@@ -37,51 +37,75 @@ def _set_import_state(project_id: str, *, status: str | None = None, stage: str 
 
 def _download_with_ytdlp(url: str, out_dir: Path, stem: str) -> Path:
     out_tpl = str(out_dir / f"{stem}.%(ext)s")
-    cmd = [
+    cookies = _cookie_file()
+
+    # Preferimos siempre el mejor master disponible. El preview del editor se crea aparte,
+    # así que un 1440p/4K60 de YouTube se conserva y el render final usa ese master.
+    base = [
         sys.executable, "-m", "yt_dlp",
         "--no-playlist",
         "--force-ipv4",
         "--retries", "3",
         "--fragment-retries", "3",
+        "--no-progress",
         "--js-runtimes", "deno:/usr/local/bin/deno",
         "--merge-output-format", "mp4",
-        "-f",
-        "bv*[height<=1080][vcodec^=avc1]+ba[acodec^=mp4a]/"
-        "bv*[height<=1080][vcodec^=avc1]+ba/"
-        "b[height<=1080][ext=mp4]/b[height<=1080]",
+        "-f", "bv*+ba/b",
         "-o", out_tpl,
     ]
-    cookies = _cookie_file()
     if cookies:
-        cmd += ["--cookies", str(cookies)]
-    cmd.append(url)
+        base += ["--cookies", str(cookies)]
 
-    try:
-        run(cmd, timeout=900)
-    except CommandError as e:
-        msg = str(e)
-        low = msg.lower()
-        if "sign in to confirm" in low or "not a bot" in low or "login_required" in low:
-            raise RuntimeError(
-                "YouTube bloqueó la IP del servidor de Railway y pide autenticación. "
-                "La herramienta sí está conectada. Para este video usa Archivo original o configura "
-                "YOUTUBE_COOKIES_B64 en Railway para contenido propio."
-            ) from e
-        if "javascript runtime" in low or "js challenge" in low:
-            raise RuntimeError(
-                "El runtime de YouTube no quedó disponible en el contenedor. "
-                "Abre /api/health para comprobar Deno y yt-dlp."
-            ) from e
-        raise RuntimeError(f"YouTube no pudo importarse: {msg[-1800:]}") from e
-
-    candidates = [
-        p for p in out_dir.glob(f"{stem}.*")
-        if p.is_file() and not p.name.endswith((".part", ".ytdl"))
+    # YouTube trata de forma distinta varias familias de cliente. En IPs de datacenter
+    # algunos clientes pueden disparar el anti-bot mientras otros siguen funcionando.
+    # Probamos alternativas oficiales de yt-dlp antes de rendirnos y pedir cookies.
+    attempts: list[tuple[str, list[str]]] = [
+        ("default", []),
+        ("web_embedded", ["--extractor-args", "youtube:player_client=web_embedded"]),
+        ("web_safari", ["--extractor-args", "youtube:player_client=web_safari"]),
     ]
-    candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
-    if not candidates:
-        raise RuntimeError("yt-dlp terminó sin crear un archivo de video.")
-    return candidates[0]
+
+    last_error: Exception | None = None
+    for label, extra in attempts:
+        # Limpia restos parciales del intento anterior para no confundir el resultado.
+        for old in out_dir.glob(f"{stem}.*"):
+            if old.is_file() and old.name.endswith((".part", ".ytdl")):
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+
+        cmd = base[:-2] + extra + base[-2:] + [url]
+        try:
+            print(f"[CLIPSESE] YouTube attempt: {label}", flush=True)
+            run(cmd, timeout=1200)
+            candidates = [
+                p for p in out_dir.glob(f"{stem}.*")
+                if p.is_file() and not p.name.endswith((".part", ".ytdl"))
+            ]
+            candidates = sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
+            if candidates:
+                return candidates[0]
+        except CommandError as e:
+            last_error = e
+            msg = str(e)
+            low = msg.lower()
+            # Si no es el típico bloqueo de YouTube, no tiene sentido probar clientes al azar.
+            if not any(x in low for x in ("sign in to confirm", "not a bot", "login_required", "403")):
+                if "javascript runtime" in low or "js challenge" in low:
+                    raise RuntimeError(
+                        "El runtime de YouTube no quedó disponible en el contenedor. "
+                        "Abre /api/health para comprobar Deno y yt-dlp."
+                    ) from e
+                raise RuntimeError(f"YouTube no pudo importarse: {msg[-1800:]}") from e
+
+    msg = str(last_error or "")
+    raise RuntimeError(
+        "YouTube está rechazando temporalmente la IP de Railway (anti-bot). "
+        "ClipSese probó varios clientes de YouTube y ninguno pudo abrir el video. "
+        "Para una solución estable hay que autenticar yt-dlp con cookies de una cuenta dedicada, "
+        "o usar Archivo original."
+    ) from last_error
 
 
 def ingest_upload(project_id: str, src: Path, original_name: str) -> dict:
@@ -108,32 +132,24 @@ def ingest_upload(project_id: str, src: Path, original_name: str) -> dict:
 def ingest_youtube(project_id: str, url: str) -> dict:
     pdir = project_dir(project_id)
     try:
-        _set_import_state(project_id, status="importing", stage="downloading")
+        _set_import_state(project_id, status="importing", stage="downloading", error="")
         source = _download_with_ytdlp(url, pdir, "source")
 
         _set_import_state(project_id, stage="analyzing")
         meta = ffprobe(source)
 
-        # Para YouTube pedimos H.264/AAC hasta 1080p. Si llega así, el mismo archivo sirve
-        # como preview y evitamos recodificar 30-60 minutos de video en Railway.
-        browser_ready = (
-            source.suffix.lower() == ".mp4"
-            and meta.get("video_codec") == "h264"
-            and meta.get("audio_codec") in {"aac", None}
-        )
-
-        if browser_ready:
-            preview_name = source.name
-        else:
-            _set_import_state(project_id, stage="preparing_preview")
-            preview_path = pdir / "preview.mp4"
-            _make_proxy(source, preview_path)
-            preview_name = preview_path.name
+        # El master se conserva en la máxima calidad que entregue YouTube. Para navegar
+        # por el editor usamos un proxy ligero y el render final vuelve siempre al master.
+        _set_import_state(project_id, stage="preparing_preview")
+        preview_path = pdir / "preview.mp4"
+        _make_proxy(source, preview_path)
+        preview_name = preview_path.name
 
         payload = {
             "id": project_id,
             "status": "ready",
             "import_stage": "ready",
+            "import_error": "",
             "original_name": "YouTube",
             "source_url": url,
             "source_file": source.name,
@@ -145,9 +161,12 @@ def ingest_youtube(project_id: str, url: str) -> dict:
         return payload
     except Exception as e:
         message = str(e)
-        _set_import_state(project_id, status="error", stage="error", error=message)
+        payload = _set_import_state(project_id, status="error", stage="error", error=message)
         print(f"[CLIPSESE] ingest_youtube ERROR: {type(e).__name__}: {message}", flush=True)
-        raise
+        # IMPORTANTE: no relanzar la excepción. Starlette ejecuta BackgroundTasks después
+        # de mandar la respuesta; si la tarea lanza una excepción, el navegador puede ver
+        # un falso 'Failed to fetch' aunque el POST ya haya respondido 200.
+        return payload
 
 
 def _make_proxy(src: Path, dest: Path):
