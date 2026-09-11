@@ -29,15 +29,13 @@ export default function CropSelector({videoUrl,currentTime,crops,active,onActive
   }
   function backgroundDown(e:React.PointerEvent){
     if((e.target as HTMLElement).closest('.crop-box'))return;
-    // Fuera de los cuadros sí permitimos dibujar uno nuevo. Evitamos selección de texto/drag
-    // nativo del navegador, pero los controles del video siguen funcionando con clic normal.
-    if((e.target as HTMLElement).closest('video') && (e.target as HTMLElement).tagName!=='VIDEO')return;
-    e.preventDefault();
+    // Conservamos el comportamiento de dibujar un cuadro nuevo sobre el video. No anulamos
+    // el evento por defecto aquí para que play/seek de los controles HTML5 sigan utilizables.
     e.currentTarget.setPointerCapture(e.pointerId);
     setGesture({type:'draw',name:active,start:point(e)});
   }
   function boxDown(e:React.PointerEvent<HTMLElement>,name:string,type:'move'|'resize'){
-    // Clave: el gesto pertenece al cuadro, no al <video> que está debajo. Sin esto Chrome
+    // El gesto pertenece al cuadro, no al <video> que está debajo. Sin preventDefault Chrome
     // intenta seleccionar/arrastrar la capa de video mientras movemos el crop.
     e.preventDefault();
     e.stopPropagation();
@@ -47,8 +45,10 @@ export default function CropSelector({videoUrl,currentTime,crops,active,onActive
   }
   function move(e:React.PointerEvent){
     if(!gesture)return;
-    e.preventDefault();
-    e.stopPropagation();
+    if(gesture.type!=='draw'){
+      e.preventDefault();
+      e.stopPropagation();
+    }
     const p=point(e);
     if(gesture.type==='draw'){
       const x=Math.min(gesture.start.x,p.x), y=Math.min(gesture.start.y,p.y);
@@ -68,10 +68,7 @@ export default function CropSelector({videoUrl,currentTime,crops,active,onActive
       onCrop(gesture.name,{...o,w,h});
     }
   }
-  function up(e?:React.PointerEvent){
-    if(e) e.preventDefault();
-    setGesture(null);
-  }
+  function up(){setGesture(null)}
   function sync(){ if(video.current && Math.abs(video.current.currentTime-currentTime)>.4) video.current.currentTime=currentTime; }
 
   return <div>
