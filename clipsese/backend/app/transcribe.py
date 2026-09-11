@@ -2,11 +2,12 @@ import json
 import os
 import re
 import sys
+from difflib import SequenceMatcher
 from pathlib import Path
 from threading import Lock
 
-from .utils import CommandError, project_dir, read_json, run, write_json
-from .video import source_path
+from .utils import project_dir, read_json, run, write_json
+from .video import _cookie_file, source_path
 
 _model = None
 _model_lock = Lock()
@@ -43,8 +44,52 @@ def _parse_json3(path: Path) -> list[dict]:
     return out
 
 
+def _caption_cmd(url: str, out_tpl: str, *, mode: str) -> list[str]:
+    cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "--no-playlist",
+        "--force-ipv4",
+        "--skip-download",
+        "--write-subs",
+        "--write-auto-subs",
+        "--sub-langs", "es.*,es,en.*,en",
+        "--sub-format", "json3",
+        "--js-runtimes", "deno:/usr/local/bin/deno",
+    ]
+
+    if mode == "mweb_pot":
+        cmd += [
+            "--extractor-args", "youtube:player_client=mweb",
+            "--extractor-args", f"youtubepot-bgutilscript:server_home={BGUTIL_SERVER}",
+        ]
+    elif mode == "web_embedded":
+        cmd += ["--extractor-args", "youtube:player_client=web_embedded"]
+
+    cookies = _cookie_file()
+    if cookies:
+        cmd += ["--cookies", str(cookies)]
+
+    cmd += ["-o", out_tpl, url]
+    return cmd
+
+
+def _load_caption_files(project_id: str) -> bool:
+    pdir = project_dir(project_id)
+    files = list(pdir.glob("captions*.json3"))
+    # Español primero; si el video sólo ofrece inglés, al menos la búsqueda sigue funcionando.
+    files.sort(key=lambda p: (0 if ".es" in p.name.lower() else 1, len(p.name)))
+    for path in files:
+        segments = _parse_json3(path)
+        if segments:
+            lang = "es" if ".es" in path.name.lower() else "en"
+            _save_project_transcript(project_id, segments, language=lang, source="youtube_captions")
+            print(f"[CLIPSESE] YouTube captions ready: {len(segments)} segments from {path.name}", flush=True)
+            return True
+    return False
+
+
 def prepare_youtube_transcript(project_id: str):
-    """Intenta preparar la búsqueda usando subtítulos de YouTube, sin ejecutar Whisper."""
+    """Prepara la búsqueda: captions de YouTube primero y Whisper automático como respaldo."""
     pdir = project_dir(project_id)
     project = read_json(pdir / "project.json") or {}
     url = project.get("source_url")
@@ -56,53 +101,40 @@ def prepare_youtube_transcript(project_id: str):
     project["transcript_hint"] = "Preparando subtítulos de YouTube para búsqueda…"
     write_json(pdir / "project.json", project)
 
-    # Elimina restos de intentos previos.
-    for old in pdir.glob("captions*.json3"):
+    attempts = ["mweb_pot", "default", "web_embedded"]
+    errors: list[str] = []
+
+    for mode in attempts:
+        for old in pdir.glob("captions*.json3"):
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+        out_tpl = str(pdir / "captions.%(ext)s")
         try:
-            old.unlink()
-        except OSError:
-            pass
-
-    out_tpl = str(pdir / "captions.%(ext)s")
-    cmd = [
-        sys.executable, "-m", "yt_dlp",
-        "--no-playlist",
-        "--force-ipv4",
-        "--skip-download",
-        "--write-subs",
-        "--write-auto-subs",
-        "--sub-langs", "es.*,es,en.*",
-        "--sub-format", "json3",
-        "--js-runtimes", "deno:/usr/local/bin/deno",
-        "--extractor-args", "youtube:player_client=mweb",
-        "--extractor-args", f"youtubepot-bgutilscript:server_home={BGUTIL_SERVER}",
-        "-o", out_tpl,
-        url,
-    ]
-
-    try:
-        run(cmd, timeout=180)
-        files = list(pdir.glob("captions*.json3"))
-        # Preferencia: español manual/auto, luego inglés si fuera lo único disponible.
-        files.sort(key=lambda p: (0 if ".es" in p.name.lower() else 1, len(p.name)))
-        for path in files:
-            segments = _parse_json3(path)
-            if segments:
-                lang = "es" if ".es" in path.name.lower() else "en"
-                _save_project_transcript(project_id, segments, language=lang, source="youtube_captions")
-                print(f"[CLIPSESE] YouTube captions ready: {len(segments)} segments from {path.name}", flush=True)
+            print(f"[CLIPSESE] captions attempt: {mode}", flush=True)
+            run(_caption_cmd(url, out_tpl, mode=mode), timeout=180)
+            if _load_caption_files(project_id):
                 return True
-        raise RuntimeError("YouTube no entregó subtítulos utilizables para este video")
-    except Exception as e:
-        # No tratamos esto como error del proyecto. El usuario todavía puede usar Whisper.
-        project = read_json(pdir / "project.json") or project
-        project["transcript_status"] = "not_started"
-        project["transcript_source"] = "none"
-        project["transcript_hint"] = "YouTube no entregó subtítulos. Usa “Analizar audio” para crear la búsqueda con Whisper."
-        project["transcript_error"] = str(e)[-1200:]
-        write_json(pdir / "project.json", project)
-        print(f"[CLIPSESE] captions unavailable: {type(e).__name__}: {e}", flush=True)
-        return False
+            errors.append(f"{mode}: sin archivos de subtítulos utilizables")
+        except Exception as e:
+            errors.append(f"{mode}: {str(e)[-500:]}")
+
+    # Los captions pueden no existir, estar desactivados o quedar bloqueados por YouTube.
+    # Para el usuario la búsqueda debe funcionar de todos modos, así que hacemos Whisper
+    # automáticamente sobre el proxy ligero ya descargado en vez de exigir otro botón.
+    project = read_json(pdir / "project.json") or project
+    project["transcript_status"] = "processing"
+    project["transcript_source"] = "whisper"
+    project["transcript_hint"] = "YouTube no entregó subtítulos; analizando el audio automáticamente para habilitar la búsqueda…"
+    project["transcript_error"] = " | ".join(errors)[-1600:]
+    write_json(pdir / "project.json", project)
+    print("[CLIPSESE] captions unavailable; falling back to Whisper automatically", flush=True)
+
+    transcribe_project(project_id)
+    final = read_json(pdir / "project.json") or {}
+    return final.get("transcript_status") == "ready"
 
 
 def transcribe_project(project_id: str):
@@ -122,8 +154,16 @@ def transcribe_project(project_id: str):
                 compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "int8")
                 _model = WhisperModel(model_name, device=device, compute_type=compute_type)
         segments, info = _model.transcribe(
-            str(source_path(project_id)), language="es", vad_filter=True, word_timestamps=True,
-            initial_prompt="NFL fantasy football. Nombres de jugadores, equipos, rookies y estadísticas."
+            str(source_path(project_id)),
+            language="es",
+            vad_filter=True,
+            word_timestamps=True,
+            beam_size=3,
+            initial_prompt=(
+                "NFL fantasy football. Nombres propios de jugadores, apellidos, equipos, rookies, "
+                "estadísticas, sleepers, waiver, trade, running backs, wide receivers, quarterbacks "
+                "y tight ends. Conserva los nombres propios aunque estén en inglés."
+            ),
         )
         out = []
         for s in segments:
@@ -144,6 +184,7 @@ def transcribe_project(project_id: str):
         project["transcript_error"] = str(e)
         project["transcript_hint"] = "No se pudo analizar el audio. Puedes seguir usando búsqueda por tiempo."
         write_json(pdir / "project.json", project)
+        print(f"[CLIPSESE] Whisper ERROR: {type(e).__name__}: {e}", flush=True)
 
 
 def _norm(text: str) -> str:
@@ -165,23 +206,61 @@ def _window_for_hit(segments: list[dict], idx: int, max_len=30.0) -> dict:
     return {"start": round(start, 3), "end": round(end, 3), "text": " ".join(texts).strip()}
 
 
+def _token_similarity(a: str, b: str) -> float:
+    if a == b:
+        return 1.0
+    if len(a) < 4 or len(b) < 4:
+        return 0.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def _fuzzy_query_score(query: str, text: str) -> float:
+    nq = _norm(query)
+    nt = _norm(text)
+    if not nq or not nt:
+        return 0.0
+    if nq in nt:
+        return 1.0
+
+    q_tokens = [x for x in nq.split() if x]
+    t_tokens = [x for x in nt.split() if x]
+    if not q_tokens or not t_tokens:
+        return 0.0
+
+    per_token = []
+    for q in q_tokens:
+        per_token.append(max((_token_similarity(q, t) for t in t_tokens), default=0.0))
+    return sum(per_token) / len(per_token)
+
+
 def keyword_search(project_id: str, query: str, max_results=8) -> list[dict]:
+    """Busca nombres/palabras con coincidencia exacta y tolerancia a errores de subtitulado."""
     tr = read_json(project_dir(project_id) / "transcript.json") or {}
     segments = tr.get("segments", [])
-    nq = _norm(query)
-    hits = []
-    last_start = -999
+    scored_hits: list[tuple[float, int]] = []
+
     for i, s in enumerate(segments):
-        if nq in _norm(s["text"]):
-            win = _window_for_hit(segments, i)
-            if win["start"] - last_start < 8:
-                continue
-            win["score"] = 1.0
-            hits.append(win)
-            last_start = win["start"]
-            if len(hits) >= max_results:
-                break
-    return hits
+        score = _fuzzy_query_score(query, s.get("text", ""))
+        # 0.80 tolera cosas como Javonte/Javonté o pequeños errores del ASR,
+        # sin convertir cualquier palabra vagamente parecida en un resultado.
+        if score >= 0.80:
+            scored_hits.append((score, i))
+
+    # Primero mejor coincidencia, luego tiempo. Al construir ventanas eliminamos duplicados cercanos.
+    scored_hits.sort(key=lambda x: (-x[0], segments[x[1]].get("start", 0)))
+    hits = []
+    used_starts: list[float] = []
+    for score, i in scored_hits:
+        win = _window_for_hit(segments, i)
+        if any(abs(win["start"] - s) < 8 for s in used_starts):
+            continue
+        win["score"] = round(score, 4)
+        hits.append(win)
+        used_starts.append(win["start"])
+        if len(hits) >= max_results:
+            break
+
+    return sorted(hits, key=lambda x: x["start"])
 
 
 def _make_windows(segments: list[dict], width=26.0, stride=16.0) -> list[dict]:
@@ -199,21 +278,41 @@ def _make_windows(segments: list[dict], width=26.0, stride=16.0) -> list[dict]:
     return windows
 
 
-def _fallback_score(query: str, text: str) -> float:
-    q = set(_norm(query).split())
-    t = set(_norm(text).split())
-    if not q or not t:
+_STOPWORDS = {
+    "a", "al", "algo", "con", "como", "cuando", "de", "del", "el", "ella", "en", "es", "esta", "este",
+    "hay", "la", "las", "lo", "los", "me", "mi", "para", "por", "que", "se", "si", "son", "su", "sus",
+    "un", "una", "uno", "unos", "unas", "y", "ya", "sobre", "habla", "hablan", "hablando", "tema",
+}
+
+
+def _theme_score(query: str, text: str) -> float:
+    q_tokens = [x for x in _norm(query).split() if x not in _STOPWORDS and len(x) > 2]
+    t_tokens = [x for x in _norm(text).split() if x not in _STOPWORDS and len(x) > 2]
+    if not q_tokens or not t_tokens:
         return 0.0
-    return len(q & t) / max(1, len(q))
+
+    scores = []
+    for q in q_tokens:
+        scores.append(max((_token_similarity(q, t) for t in t_tokens), default=0.0))
+
+    strong = [s for s in scores if s >= 0.78]
+    if not strong:
+        return 0.0
+    coverage = len(strong) / len(q_tokens)
+    quality = sum(strong) / len(strong)
+    return coverage * 0.7 + quality * 0.3
 
 
 def theme_search(project_id: str, query: str, max_results=8) -> list[dict]:
-    """Búsqueda temática ligera para Railway pequeño."""
+    """Búsqueda temática ligera: ventanas de 26 s + coincidencia tolerante de conceptos/palabras."""
     tr = read_json(project_dir(project_id) / "transcript.json") or {}
     windows = _make_windows(tr.get("segments", []))
     scored = []
     for w in windows:
+        score = _theme_score(query, w["text"])
+        if score <= 0:
+            continue
         item = dict(w)
-        item["score"] = round(_fallback_score(query, w["text"]), 4)
+        item["score"] = round(score, 4)
         scored.append(item)
-    return [x for x in sorted(scored, key=lambda x: x["score"], reverse=True) if x["score"] > 0][:max_results]
+    return sorted(scored, key=lambda x: x["score"], reverse=True)[:max_results]
