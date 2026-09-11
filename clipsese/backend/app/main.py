@@ -10,17 +10,28 @@ from fastapi.responses import FileResponse
 
 from .models import RenderRequest, SearchRequest
 from .transcribe import keyword_search, theme_search, transcribe_project
-from .utils import STORAGE_DIR, is_allowed_url, project_dir, read_json
+from .utils import is_allowed_url, project_dir, read_json, runtime_diagnostics
 from .video import add_media_upload, add_media_url, ingest_upload, ingest_youtube, render_clip
 
-app = FastAPI(title="ClipSese API", version="0.1.0")
-origins = [x.strip() for x in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if x.strip()]
-app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="ClipSese API", version="0.2.0")
+origins = [x.strip().rstrip("/") for x in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if x.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/")
+def root():
+    return {"app": "ClipSese API", "ok": True, "health": "/api/health", "docs": "/docs"}
 
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "version": "0.2.0", "runtime": runtime_diagnostics()}
 
 
 @app.post("/api/projects")
@@ -39,6 +50,7 @@ async def create_project(file: UploadFile | None = File(default=None), youtube_u
             return ingest_upload(pid, temp_path, file.filename or "video")
         return ingest_youtube(pid, youtube_url)
     except Exception as e:
+        print(f"[CLIPSESE] create_project ERROR: {type(e).__name__}: {e}", flush=True)
         raise HTTPException(500, str(e))
 
 
@@ -90,6 +102,7 @@ async def add_media(project_id: str, file: UploadFile | None = File(default=None
             return add_media_upload(project_id, temp_path, file.filename or "media")
         return add_media_url(project_id, url)
     except Exception as e:
+        print(f"[CLIPSESE] add_media ERROR: {type(e).__name__}: {e}", flush=True)
         raise HTTPException(500, str(e))
 
 
@@ -100,6 +113,7 @@ def render(project_id: str, req: RenderRequest):
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
+        print(f"[CLIPSESE] render ERROR: {type(e).__name__}: {e}", flush=True)
         raise HTTPException(500, str(e))
 
 
