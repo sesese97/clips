@@ -13,14 +13,28 @@ from .transcribe import keyword_search, theme_search, transcribe_project
 from .utils import is_allowed_url, project_dir, read_json, runtime_diagnostics, write_json
 from .video import add_media_upload, add_media_url, ingest_upload, ingest_youtube, render_clip
 
-app = FastAPI(title="ClipSese API", version="0.3.0")
-origins = [x.strip().rstrip("/") for x in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if x.strip()]
+app = FastAPI(title="ClipSese API", version="0.3.1")
+
+# CORS: mantenemos el dominio configurado en Railway, localhost para desarrollo y además
+# aceptamos cualquier deployment *.vercel.app. Vercel cambia de hostname entre Production
+# y Preview; si el origen no coincide exactamente, el navegador oculta una respuesta 200 y
+# fetch() termina como un falso "Failed to fetch".
+origins = [
+    x.strip().rstrip("/")
+    for x in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
+    if x.strip()
+]
+if "http://localhost:5173" not in origins:
+    origins.append("http://localhost:5173")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
+    allow_origin_regex=r"https://[A-Za-z0-9-]+\.vercel\.app",
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
@@ -31,7 +45,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.3.0", "runtime": runtime_diagnostics()}
+    return {"ok": True, "version": "0.3.1", "runtime": runtime_diagnostics()}
 
 
 @app.post("/api/projects")
