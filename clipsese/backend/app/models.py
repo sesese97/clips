@@ -17,6 +17,10 @@ class RenderRequest(BaseModel):
     camera2: Crop | None = None
     content: Crop | None = None
     media_id: str | None = None
+    media_fit: Literal["contain", "cover"] = "contain"
+    media_zoom: float = Field(default=1.0, ge=0.5, le=2.5)
+    media_x: float = Field(default=0.0, ge=-1.0, le=1.0)
+    media_y: float = Field(default=0.0, ge=-1.0, le=1.0)
 
 
 class SearchRequest(BaseModel):
