@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
@@ -8,26 +9,49 @@ STORAGE_DIR = Path(os.getenv("STORAGE_DIR", Path(__file__).resolve().parents[1] 
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def run(cmd: list[str]) -> subprocess.CompletedProcess:
-    print("EJECUTANDO:", " ".join(str(x) for x in cmd), flush=True)
+class CommandError(RuntimeError):
+    def __init__(self, message: str, *, command: list[str] | None = None, returncode: int | None = None):
+        super().__init__(message)
+        self.command = command or []
+        self.returncode = returncode
 
-    cp = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True
-    )
+
+def run(cmd: list[str], *, timeout: int | None = None) -> subprocess.CompletedProcess:
+    safe_cmd = [str(x) for x in cmd]
+    print("[CLIPSESE] EXEC:", " ".join(safe_cmd), flush=True)
+    try:
+        cp = subprocess.run(safe_cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        raise CommandError(f"El proceso excedió el tiempo límite ({timeout}s)", command=safe_cmd) from e
 
     if cp.stdout:
-        print("STDOUT:", cp.stdout, flush=True)
-
+        print("[CLIPSESE] STDOUT:\n" + cp.stdout[-8000:], flush=True)
     if cp.stderr:
-        print("STDERR:", cp.stderr, flush=True)
+        print("[CLIPSESE] STDERR:\n" + cp.stderr[-8000:], flush=True)
 
     if cp.returncode != 0:
-        error = cp.stderr.strip() or cp.stdout.strip() or f"Proceso terminó con código {cp.returncode}"
-        raise RuntimeError(error[-5000:])
-
+        msg = (cp.stderr or cp.stdout or f"Proceso terminó con código {cp.returncode}").strip()
+        raise CommandError(msg[-6000:], command=safe_cmd, returncode=cp.returncode)
     return cp
+
+
+def binary_version(command: list[str]) -> str | None:
+    try:
+        cp = subprocess.run(command, capture_output=True, text=True, timeout=10)
+        text = (cp.stdout or cp.stderr or "").strip()
+        return text.splitlines()[0] if text else None
+    except Exception:
+        return None
+
+
+def runtime_diagnostics() -> dict:
+    return {
+        "ffmpeg": binary_version(["ffmpeg", "-version"]),
+        "yt_dlp": binary_version(["python", "-m", "yt_dlp", "--version"]),
+        "deno": binary_version(["/usr/local/bin/deno", "--version"]),
+        "deno_path": shutil.which("deno"),
+        "storage_dir": str(STORAGE_DIR),
+    }
 
 
 def ffprobe(path: Path) -> dict:
@@ -35,7 +59,7 @@ def ffprobe(path: Path) -> dict:
         "ffprobe", "-v", "error", "-show_entries",
         "format=duration:stream=index,codec_type,width,height,r_frame_rate,codec_name",
         "-of", "json", str(path)
-    ])
+    ], timeout=60)
     data = json.loads(cp.stdout)
     duration = float(data.get("format", {}).get("duration") or 0)
     video = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), {})
