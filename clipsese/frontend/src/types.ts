@@ -3,7 +3,10 @@ export type Layout = 'one_media' | 'two_cameras' | 'two_media';
 export type Project = {
   id: string;
   status: string;
+  import_stage?: string;
+  import_error?: string;
   original_name: string;
+  source_url?: string;
   preview_file: string;
   metadata: { duration: number; width: number; height: number; fps: string };
   transcript_status: string;
