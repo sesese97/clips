@@ -12,7 +12,9 @@ function sec(v:number){const m=Math.floor(v/60),s=Math.floor(v%60);return `${m}:
 
 const importLabels:Record<string,string>={
   queued:'Preparando importación…',
-  downloading:'Descargando video de YouTube…',
+  connecting:'Conectando con YouTube y validando acceso…',
+  preparing_proxy:'Preparando una copia ligera para editar…',
+  downloading:'Conectando con YouTube…',
   analyzing:'Analizando video…',
   preparing_preview:'Preparando vista previa…',
   ready:'Listo',
@@ -70,7 +72,7 @@ export default function App(){
   async function doSearch(){if(!project||mode==='time'||!query.trim())return;setLoading('Buscando…');try{setResults(await searchTranscript(project.id,mode,query))}catch(e:any){setErr(e.message)}finally{setLoading('')}}
   async function uploadMedia(file?:File){if(!project||!file)return;setLoading('Subiendo multimedia…');try{const m:any=await addMedia(project.id,file);await refresh();setMediaId(m.id)}catch(e:any){setErr(e.message)}finally{setLoading('')}}
   async function importMediaUrl(){if(!project||!mediaUrl.trim())return;setLoading('Importando multimedia…');try{const m:any=await addMedia(project.id,undefined,mediaUrl.trim());await refresh();setMediaId(m.id);setMediaUrl('')}catch(e:any){setErr(e.message)}finally{setLoading('')}}
-  async function render(){if(!project)return;if(clipLen<=0||clipLen>30){setErr('El clip debe durar entre 0 y 30 segundos');return}setLoading('Renderizando a 1080×1920…');try{const body:any={start,end,layout,camera1:crops.camera1};if(layout!=='one_media')body.camera2=crops.camera2;if(layout!=='two_cameras'){if(mediaId)body.media_id=mediaId;else body.content=crops.content}const r=await renderClip(project.id,body);await refresh();window.open(fileUrl(project.id,r.file),'_blank')}catch(e:any){setErr(e.message)}finally{setLoading('')}}
+  async function render(){if(!project)return;if(clipLen<=0||clipLen>30){setErr('El clip debe durar entre 0 y 30 segundos');return}setLoading(project.source_url?'Obteniendo el tramo en máxima calidad y renderizando…':'Renderizando a 1080×1920…');try{const body:any={start,end,layout,camera1:crops.camera1};if(layout!=='one_media')body.camera2=crops.camera2;if(layout!=='two_cameras'){if(mediaId)body.media_id=mediaId;else body.content=crops.content}const r=await renderClip(project.id,body);await refresh();window.open(fileUrl(project.id,r.file),'_blank')}catch(e:any){setErr(e.message)}finally{setLoading('')}}
 
   return <div className="app-shell">
     <aside><div className="brand">CLIP<span>SESE</span><small>Tu contenido, más lejos</small></div><nav><a className="active"><Film size={18}/>Nuevo clip</a><a><Wand2 size={18}/>Layouts</a></nav><div className="aside-note">MVP privado para clips de hasta 30 s. Usa contenido propio o con autorización.</div></aside>
@@ -82,9 +84,9 @@ export default function App(){
         <section className="card import-card"><h2>1. Importar video</h2><div className="import-grid"><div><label>Enlace de YouTube</label><div className="row"><input value={yt} onChange={e=>setYt(e.target.value)} placeholder="https://youtube.com/watch?v=…"/><button onClick={()=>ingest()} disabled={!yt}><LinkIcon size={16}/>Cargar</button></div></div><div className="upload-box"><Upload/><strong>Archivo original</strong><span>Máxima calidad. MP4/MOV/WebM.</span><input type="file" accept="video/*" onChange={e=>ingest(e.target.files?.[0])}/></div></div></section>
       :project.status!=='ready'?
         <section className="card import-card">
-          <h2>{project.status==='error'?'No se pudo importar':'Importando video'}</h2>
+          <h2>{project.status==='error'?'No se pudo importar':'Preparando video'}</h2>
           <p>{project.status==='error'?(project.import_error||'La importación falló.'):(importLabels[project.import_stage||'queued']||'Procesando video…')}</p>
-          {project.status==='importing'&&<p style={{opacity:.7}}>Puedes dejar esta pestaña abierta. ClipSese consulta el avance automáticamente y abrirá el editor cuando el video esté listo.</p>}
+          {project.status==='importing'&&<p style={{opacity:.7}}>Para YouTube se prepara sólo una copia ligera de edición. La máxima calidad se obtiene únicamente al exportar el clip.</p>}
           <button className="ghost" onClick={()=>{setProject(null);setErr('')}}>{project.status==='error'?'Intentar otro video':'Cancelar / cambiar video'}</button>
         </section>
       :<>
