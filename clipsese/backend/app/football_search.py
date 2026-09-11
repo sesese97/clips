@@ -38,10 +38,27 @@ _CORRECTIONS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bashton\s+gen(?:t|ti|ty)?\b", re.I), "Ashton Jeanty"),
     (re.compile(r"\bgeorge\s+ki(?:ro|lo|tle)\b", re.I), "George Kittle"),
     (re.compile(r"\bky\s+muray\b", re.I), "Kyler Murray"),
+    (re.compile(r"\bmalik\s+neighbors\b", re.I), "Malik Nabers"),
+    (re.compile(r"\bdove\s+samuel\b", re.I), "Deebo Samuel"),
     (re.compile(r"\bmcbright\b", re.I), "McBride"),
     (re.compile(r"\btiden\b", re.I), "tight end"),
     (re.compile(r"\blos\s+bers\b", re.I), "los Bears"),
 ]
+
+# Alias que sólo se consideran cuando el usuario YA está buscando ese jugador. Esto permite
+# recuperar errores muy agresivos (p. ej. Deebo -> "dove") sin convertir toda aparición de
+# una palabra parecida en un nombre de jugador.
+_PLAYER_ALIASES: dict[str, tuple[str, ...]] = {
+    "Tucker Kraft": ("tockercraf", "tocker craf", "tucker craft"),
+    "Derrick Henry": ("der herny",),
+    "Patrick Mahomes": ("patri holmes", "patrick holmes"),
+    "Ashton Jeanty": ("ashton gen", "ashton gent", "ashton genti"),
+    "George Kittle": ("george kiro", "george kilo"),
+    "Trey McBride": ("mcbright",),
+    "Kyler Murray": ("ky muray",),
+    "Malik Nabers": ("malik neighbors", "malik neighbor"),
+    "Deebo Samuel": ("dove", "dibo", "debo"),
+}
 
 
 def _norm(text: str) -> str:
@@ -78,7 +95,6 @@ def _load_players() -> list[str]:
         for p in data.values():
             if not isinstance(p, dict):
                 continue
-            # Mantener jugadores actuales/relevantes. Los sin estado explícito también entran.
             if p.get("active") is False:
                 continue
             full = (p.get("full_name") or "").strip()
@@ -130,8 +146,6 @@ def _player_candidates(query: str) -> list[tuple[float, str]]:
             scored.append((score, full))
 
     scored.sort(key=lambda x: (-x[0], len(x[1])))
-    # Un apellido común puede devolver muchos jugadores. No necesitamos indexar media NFL
-    # para cada tecla: con ocho candidatos se cubre la intención sin llenar de falsos positivos.
     return scored[:8]
 
 
@@ -157,21 +171,25 @@ def _player_text_score(canonical: str, text: str) -> float:
     parts = nf.split()
     last = parts[-1]
 
-    # Si la normalización de dominio ya recuperó el nombre, no hay nada que adivinar.
     if nf in nt:
         return 1.0
+
+    # Alias específicos del jugador: sólo se habilitan después de resolver la consulta a ese
+    # nombre, así que "dove" no se convierte caprichosamente en Deebo en búsquedas generales.
+    for alias in _PLAYER_ALIASES.get(canonical, ()):
+        if _norm(alias) in nt:
+            return 0.96
+
     tokens = nt.split()
     if last in tokens:
         return 0.97
 
-    # Apellido aproximado, pero con umbral alto. Así "kraft" NO casa con "draft".
+    # Apellido aproximado con umbral alto. "kraft" ya no casa con "draft".
     last_best = max((SequenceMatcher(None, last, t).ratio() for t in tokens if len(t) >= 4), default=0.0)
     if last_best >= 0.88:
         return 0.90 + (last_best - 0.88) * 0.5
 
-    # Los captions suelen pegar el nombre: "tockercraf". Comparamos el nombre completo
-    # compacto contra grupos de 1-3 tokens; aquí sí permitimos más error porque dos nombres
-    # juntos son mucho más discriminantes que un apellido aislado.
+    # Nombre completo contra grupos de 1-3 tokens para captions que pegan/deforman ambos nombres.
     target = _compact(nf)
     best_full = 0.0
     for gram in _ngrams(tokens, 1, 3):
@@ -227,8 +245,8 @@ def keyword_search(project_id: str, query: str, max_results: int = 8) -> list[di
         return []
 
     candidates = _player_candidates(query)
-    # Si el apellido/nombre es inequívoco usamos memoria NFL. Si "Smith" devuelve media
-    # plantilla, preferimos búsqueda textual estricta para no inventar de qué Smith hablaban.
+    # Para un apellido extremadamente común como Smith preferimos búsqueda textual estricta;
+    # para Kraft/Nabers/McBride/etc. usamos la memoria de jugador completa.
     use_player_memory = bool(candidates) and not (len(candidates) >= 6 and len(_norm(query).split()) == 1)
 
     scored: list[tuple[float, int, str | None]] = []
@@ -239,7 +257,6 @@ def keyword_search(project_id: str, query: str, max_results: int = 8) -> list[di
             best_name: str | None = None
             for candidate_score, canonical in candidates:
                 hit = _player_text_score(canonical, text)
-                # La confianza de resolución de la consulta modula ligeramente el resultado.
                 hit *= 0.93 + 0.07 * candidate_score
                 if hit > best_score:
                     best_score, best_name = hit, canonical
@@ -258,8 +275,6 @@ def keyword_search(project_id: str, query: str, max_results: int = 8) -> list[di
         if any(abs(win["start"] - old) < 8 for old in used_starts):
             continue
         if canonical and canonical not in win["text"]:
-            # Ayuda visual: la UI deja claro qué jugador recuperó la memoria NFL aunque
-            # YouTube lo haya escrito fonéticamente. No reescribimos el resto de la frase.
             win["text"] = f"[{canonical}] {win['text']}"
         win["score"] = round(min(1.0, score), 4)
         hits.append(win)
@@ -270,9 +285,6 @@ def keyword_search(project_id: str, query: str, max_results: int = 8) -> list[di
 
 
 def theme_search(project_id: str, query: str, max_results: int = 8) -> list[dict]:
-    # Para consultas temáticas que en realidad son nombres de jugador, usamos el buscador
-    # especializado. Para el resto conservamos el buscador temático existente y sólo limpiamos
-    # errores NFL inequívocos en el texto mostrado.
     candidates = _player_candidates(query)
     if candidates and len(_norm(query).split()) <= 3:
         hits = keyword_search(project_id, query, max_results)
