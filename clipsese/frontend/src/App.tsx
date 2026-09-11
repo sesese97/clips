@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Download, Film, Link as LinkIcon, Search, Upload, Wand2 } from 'lucide-react';
 import CropSelector from './components/CropSelector';
 import VerticalPreview from './components/VerticalPreview';
@@ -10,18 +10,62 @@ const defaultCrops:Record<string,Crop>={
 };
 function sec(v:number){const m=Math.floor(v/60),s=Math.floor(v%60);return `${m}:${String(s).padStart(2,'0')}`}
 
+const importLabels:Record<string,string>={
+  queued:'Preparando importación…',
+  downloading:'Descargando video de YouTube…',
+  analyzing:'Analizando video…',
+  preparing_preview:'Preparando vista previa…',
+  ready:'Listo',
+  error:'Error al importar'
+};
+
 export default function App(){
   const [project,setProject]=useState<Project|null>(null); const [yt,setYt]=useState(''); const [loading,setLoading]=useState(''); const [err,setErr]=useState('');
   const [start,setStart]=useState(0); const [end,setEnd]=useState(30); const [mode,setMode]=useState<'time'|'keyword'|'theme'>('time'); const [query,setQuery]=useState(''); const [results,setResults]=useState<SearchResult[]>([]);
   const [layout,setLayout]=useState<Layout>('one_media'); const [crops,setCrops]=useState(defaultCrops); const [activeCrop,setActiveCrop]=useState('camera1'); const [mediaId,setMediaId]=useState<string>(''); const [mediaUrl,setMediaUrl]=useState('');
-  const preview=project?fileUrl(project.id,project.preview_file):''; const selectedMedia=project?.media?.find(m=>m.id===mediaId);
-  const duration=project?.metadata.duration||0;
+  const preview=project?.preview_file?fileUrl(project.id,project.preview_file):''; const selectedMedia=project?.media?.find(m=>m.id===mediaId);
+  const duration=project?.metadata?.duration||0;
   const clipLen=Math.max(0,end-start);
 
-  async function refresh(){if(project){const p=await getProject(project.id);setProject(p)}}
-  useEffect(()=>{if(!project||project.transcript_status!=='processing')return;const t=setInterval(()=>refresh().catch(()=>{}),2500);return()=>clearInterval(t)},[project?.id,project?.transcript_status]);
+  async function refresh(){if(project){const p=await getProject(project.id);setProject(p);return p}}
 
-  async function ingest(file?:File){setErr('');setLoading('Importando video…');try{const p=await createProject(file, file?undefined:yt);setProject(p);setEnd(Math.min(30,p.metadata.duration));setStart(0)}catch(e:any){setErr(e.message)}finally{setLoading('')}}
+  useEffect(()=>{
+    if(!project)return;
+    const shouldPoll=project.status==='importing'||project.transcript_status==='processing';
+    if(!shouldPoll)return;
+    const id=project.id;
+    const previousStatus=project.status;
+    const poll=async()=>{
+      try{
+        const p=await getProject(id);
+        setProject(p);
+        if(previousStatus!=='ready'&&p.status==='ready'){
+          setStart(0);
+          setEnd(Math.min(30,p.metadata?.duration||30));
+          setErr('');
+        }
+        if(p.status==='error') setErr(p.import_error||'No se pudo importar el video.');
+      }catch(e:any){
+        setErr(e.message||'No se pudo consultar el estado de la importación.');
+      }
+    };
+    poll();
+    const t=setInterval(poll,2500);
+    return()=>clearInterval(t);
+  },[project?.id,project?.status,project?.transcript_status]);
+
+  async function ingest(file?:File){
+    setErr('');
+    setLoading(file?'Subiendo archivo…':'Iniciando importación…');
+    try{
+      const p=await createProject(file,file?undefined:yt);
+      setProject(p);
+      if(p.status==='ready'){
+        setEnd(Math.min(30,p.metadata?.duration||30));
+        setStart(0);
+      }
+    }catch(e:any){setErr(e.message)}finally{setLoading('')}
+  }
   async function transcribe(){if(!project)return;setLoading('Iniciando transcripción…');try{await startTranscription(project.id);await refresh()}catch(e:any){setErr(e.message)}finally{setLoading('')}}
   async function doSearch(){if(!project||mode==='time'||!query.trim())return;setLoading('Buscando…');try{setResults(await searchTranscript(project.id,mode,query))}catch(e:any){setErr(e.message)}finally{setLoading('')}}
   async function uploadMedia(file?:File){if(!project||!file)return;setLoading('Subiendo multimedia…');try{const m:any=await addMedia(project.id,file);await refresh();setMediaId(m.id)}catch(e:any){setErr(e.message)}finally{setLoading('')}}
@@ -33,8 +77,17 @@ export default function App(){
     <main>
       <header><div><h1>Creador de clips verticales</h1><p>YouTube o archivo original → busca el momento → acomoda cámaras → exporta.</p></div><div className="quality">1080 × 1920 · H.264 · CRF 17</div></header>
       {err&&<div className="error" onClick={()=>setErr('')}>{err}</div>}{loading&&<div className="loading">{loading}</div>}
-      {!project?<section className="card import-card"><h2>1. Importar video</h2><div className="import-grid"><div><label>Enlace de YouTube</label><div className="row"><input value={yt} onChange={e=>setYt(e.target.value)} placeholder="https://youtube.com/watch?v=…"/><button onClick={()=>ingest()} disabled={!yt}><LinkIcon size={16}/>Cargar</button></div></div><div className="upload-box"><Upload/><strong>Archivo original</strong><span>Máxima calidad. MP4/MOV/WebM.</span><input type="file" accept="video/*" onChange={e=>ingest(e.target.files?.[0])}/></div></div></section>:
-      <>
+
+      {!project?
+        <section className="card import-card"><h2>1. Importar video</h2><div className="import-grid"><div><label>Enlace de YouTube</label><div className="row"><input value={yt} onChange={e=>setYt(e.target.value)} placeholder="https://youtube.com/watch?v=…"/><button onClick={()=>ingest()} disabled={!yt}><LinkIcon size={16}/>Cargar</button></div></div><div className="upload-box"><Upload/><strong>Archivo original</strong><span>Máxima calidad. MP4/MOV/WebM.</span><input type="file" accept="video/*" onChange={e=>ingest(e.target.files?.[0])}/></div></div></section>
+      :project.status!=='ready'?
+        <section className="card import-card">
+          <h2>{project.status==='error'?'No se pudo importar':'Importando video'}</h2>
+          <p>{project.status==='error'?(project.import_error||'La importación falló.'):(importLabels[project.import_stage||'queued']||'Procesando video…')}</p>
+          {project.status==='importing'&&<p style={{opacity:.7}}>Puedes dejar esta pestaña abierta. ClipSese consulta el avance automáticamente y abrirá el editor cuando el video esté listo.</p>}
+          <button className="ghost" onClick={()=>{setProject(null);setErr('')}}>{project.status==='error'?'Intentar otro video':'Cancelar / cambiar video'}</button>
+        </section>
+      :<>
       <section className="card projectbar"><div><b>{project.original_name}</b><span>{project.metadata.width}×{project.metadata.height} · {sec(project.metadata.duration)}</span></div><button className="ghost" onClick={()=>setProject(null)}>Cambiar video</button></section>
       <div className="workspace">
         <div className="leftcol">
