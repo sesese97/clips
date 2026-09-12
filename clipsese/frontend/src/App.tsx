@@ -122,6 +122,22 @@ export default function App(){
   }
   async function uploadMedia(file?:File){if(!project||!file)return;setLoading('Subiendo multimedia…');try{const m:any=await addMedia(project.id,file);await refresh();setMediaId(m.id);setMediaTransform({...defaultMediaTransform})}catch(e:any){setErr(e.message)}finally{setLoading('')}}
   async function importMediaUrl(){if(!project||!mediaUrl.trim())return;setLoading('Importando multimedia…');try{const m:any=await addMedia(project.id,undefined,mediaUrl.trim());await refresh();setMediaId(m.id);setMediaTransform({...defaultMediaTransform});setMediaUrl('')}catch(e:any){setErr(e.message)}finally{setLoading('')}}
+  async function downloadRender(file:string,startAt?:number,endAt?:number){
+    if(!project)return;
+    setErr('');setLoading('Preparando descarga…');
+    try{
+      const res=await fetch(fileUrl(project.id,file));
+      if(!res.ok)throw new Error(`No se pudo descargar el MP4 (${res.status})`);
+      const blob=await res.blob();
+      const href=URL.createObjectURL(blob);
+      const a=document.createElement('a');
+      const from=sec(startAt??start).replace(/[:.]/g,'-');
+      const to=sec(endAt??end).replace(/[:.]/g,'-');
+      a.href=href;a.download=`ClipSese_${from}_${to}.mp4`;a.style.display='none';
+      document.body.appendChild(a);a.click();a.remove();
+      setTimeout(()=>URL.revokeObjectURL(href),60000);
+    }catch(e:any){setErr(e.message||'No se pudo descargar el video.')}finally{setLoading('')}
+  }
   async function render(){
     if(!project)return;
     if(clipLen<=0||clipLen>MAX_CLIP_SECONDS){setErr(`El clip debe durar entre 0 y ${MAX_CLIP_SECONDS} segundos`);return}
@@ -194,7 +210,10 @@ export default function App(){
               </div>}
             </div>}
             <div className="clip-summary"><span>Inicio <b>{sec(start)}</b></span><span>Fin <b>{sec(end)}</b></span><span>Duración <b>{clipLen.toFixed(1)} s</b></span></div><button className="export" onClick={render} disabled={clipLen<=0||clipLen>MAX_CLIP_SECONDS}><Download size={18}/>Exportar máxima calidad</button>
-            {project.renders&&project.renders.length>0&&<div className="recent"><h3>Exports recientes</h3>{project.renders.slice(0,3).map(r=><a key={r.id} href={fileUrl(project.id,r.file)} target="_blank">{r.file} · {sec(r.end-r.start)}</a>)}</div>}
+            {project.renders&&project.renders.length>0&&<>
+              <button className="download-latest" onClick={()=>downloadRender(project.renders![0].file,project.renders![0].start,project.renders![0].end)}><Download size={18}/>Descargar último MP4</button>
+              <div className="recent"><h3>Exports recientes</h3>{project.renders.slice(0,3).map(r=><div className="recent-item" key={r.id}><a href={fileUrl(project.id,r.file)} target="_blank" rel="noreferrer">Ver · {sec(r.end-r.start)}</a><button className="recent-download" onClick={()=>downloadRender(r.file,r.start,r.end)}><Download size={13}/>Descargar</button></div>)}</div>
+            </>}
           </section>
         </div>
       </div></>}
