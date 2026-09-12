@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Crop } from '../types';
 
 type Props = {
@@ -8,6 +8,8 @@ type Props = {
   active: string;
   onActive: (name:string)=>void;
   onCrop: (name:string,crop:Crop)=>void;
+  onTimeChange?: (time:number)=>void;
+  onPlayingChange?: (playing:boolean)=>void;
 };
 
 type Gesture =
@@ -18,10 +20,18 @@ type Gesture =
 const labels: Record<string,string> = {camera1:'Cámara 1',camera2:'Cámara 2',content:'Contenido'};
 const cropKeys=['camera1','camera2','content'];
 
-export default function CropSelector({videoUrl,currentTime,crops,active,onActive,onCrop}:Props){
+export default function CropSelector({videoUrl,currentTime,crops,active,onActive,onCrop,onTimeChange,onPlayingChange}:Props){
   const wrap=useRef<HTMLDivElement>(null);
   const video=useRef<HTMLVideoElement>(null);
   const [gesture,setGesture]=useState<Gesture>(null);
+
+  useEffect(()=>{
+    const v=video.current;
+    if(!v || !Number.isFinite(currentTime))return;
+    if(Math.abs(v.currentTime-currentTime)>.65){
+      try{v.currentTime=currentTime}catch{}
+    }
+  },[currentTime,videoUrl]);
 
   function point(e: React.PointerEvent){
     const r=wrap.current!.getBoundingClientRect();
@@ -29,14 +39,10 @@ export default function CropSelector({videoUrl,currentTime,crops,active,onActive
   }
   function backgroundDown(e:React.PointerEvent){
     if((e.target as HTMLElement).closest('.crop-box'))return;
-    // Conservamos el comportamiento de dibujar un cuadro nuevo sobre el video. No anulamos
-    // el evento por defecto aquí para que play/seek de los controles HTML5 sigan utilizables.
     e.currentTarget.setPointerCapture(e.pointerId);
     setGesture({type:'draw',name:active,start:point(e)});
   }
   function boxDown(e:React.PointerEvent<HTMLElement>,name:string,type:'move'|'resize'){
-    // El gesto pertenece al cuadro, no al <video> que está debajo. Sin preventDefault Chrome
-    // intenta seleccionar/arrastrar la capa de video mientras movemos el crop.
     e.preventDefault();
     e.stopPropagation();
     onActive(name);
@@ -69,7 +75,14 @@ export default function CropSelector({videoUrl,currentTime,crops,active,onActive
     }
   }
   function up(){setGesture(null)}
-  function sync(){ if(video.current && Math.abs(video.current.currentTime-currentTime)>.4) video.current.currentTime=currentTime; }
+  function sync(){
+    const v=video.current;
+    if(!v)return;
+    if(Math.abs(v.currentTime-currentTime)>.4){
+      try{v.currentTime=currentTime}catch{}
+    }
+    onTimeChange?.(v.currentTime);
+  }
 
   return <div>
     <div className="crop-tabs">{cropKeys.filter(k=>crops[k]).map(k=><button key={k} className={active===k?'active':''} onClick={()=>onActive(k)}>{labels[k]}</button>)}</div>
@@ -83,7 +96,21 @@ export default function CropSelector({videoUrl,currentTime,crops,active,onActive
       onDragStart={e=>e.preventDefault()}
       style={{userSelect:'none',WebkitUserSelect:'none'}}
     >
-      <video ref={video} src={videoUrl} controls draggable={false} onDragStart={e=>e.preventDefault()} onLoadedMetadata={sync} onSeeked={sync}/>
+      <video
+        ref={video}
+        src={videoUrl}
+        controls
+        preload="auto"
+        playsInline
+        draggable={false}
+        onDragStart={e=>e.preventDefault()}
+        onLoadedMetadata={sync}
+        onSeeked={()=>{const v=video.current;if(v)onTimeChange?.(v.currentTime)}}
+        onTimeUpdate={()=>{const v=video.current;if(v)onTimeChange?.(v.currentTime)}}
+        onPlay={()=>onPlayingChange?.(true)}
+        onPause={()=>onPlayingChange?.(false)}
+        onEnded={()=>onPlayingChange?.(false)}
+      />
       {cropKeys.filter(k=>crops[k]).map(k=>{
         const c=crops[k];
         return <div
@@ -100,6 +127,6 @@ export default function CropSelector({videoUrl,currentTime,crops,active,onActive
         </div>;
       })}
     </div>
-    <p className="hint">Arrastra dentro de un cuadro para moverlo. Usa la esquina inferior derecha para cambiar su tamaño. Arrastrar fuera de los cuadros crea una selección nueva.</p>
+    <p className="hint">El video puede seguir reproduciéndose mientras mueves o redimensionas los cuadros. La vista vertical se sincroniza con este mismo punto del video.</p>
   </div>
 }
