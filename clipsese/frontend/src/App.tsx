@@ -55,6 +55,7 @@ const importLabels:Record<string,string>={
 export default function App(){
   const [project,setProject]=useState<Project|null>(null); const [yt,setYt]=useState(''); const [loading,setLoading]=useState(''); const [err,setErr]=useState('');
   const [start,setStart]=useState(0); const [end,setEnd]=useState(30); const [startText,setStartText]=useState('0:00'); const [endText,setEndText]=useState('0:30');
+  const [playhead,setPlayhead]=useState(0); const [previewPlaying,setPreviewPlaying]=useState(false);
   const [mode,setMode]=useState<'time'|'keyword'|'theme'>('time'); const [query,setQuery]=useState(''); const [results,setResults]=useState<SearchResult[]>([]);
   const [layout,setLayout]=useState<Layout>('one_media'); const [crops,setCrops]=useState(defaultCrops); const [activeCrop,setActiveCrop]=useState('camera1'); const [mediaId,setMediaId]=useState<string>(''); const [mediaUrl,setMediaUrl]=useState('');
   const [mediaTransform,setMediaTransform]=useState<MediaTransform>(defaultMediaTransform);
@@ -66,13 +67,13 @@ export default function App(){
     const safeA=Math.max(0,Math.min(a,duration||a));
     const requestedB=Math.min(b,safeA+MAX_CLIP_SECONDS);
     const safeB=Math.max(safeA,Math.min(requestedB,duration||requestedB));
-    setStart(safeA); setEnd(safeB); setStartText(sec(safeA)); setEndText(sec(safeB));
+    setStart(safeA); setEnd(safeB); setStartText(sec(safeA)); setEndText(sec(safeB)); setPlayhead(safeA); setPreviewPlaying(false);
   }
   function editTime(which:'start'|'end',value:string){
     const parsed=parseTime(value);
     if(which==='start'){
       setStartText(value);
-      if(parsed!==null)setStart(Math.min(parsed,duration||parsed));
+      if(parsed!==null){const v=Math.min(parsed,duration||parsed);setStart(v);setPlayhead(v)}
     }else{
       setEndText(value);
       if(parsed!==null)setEnd(Math.min(parsed,duration||parsed));
@@ -92,7 +93,7 @@ export default function App(){
         setProject(p);
         if(project.status!=='ready'&&p.status==='ready'){
           const e=Math.min(30,p.metadata?.duration||30);
-          setStart(0);setEnd(e);setStartText('0:00');setEndText(sec(e));setErr('');
+          setStart(0);setEnd(e);setStartText('0:00');setEndText(sec(e));setPlayhead(0);setPreviewPlaying(false);setErr('');
         }
         if(p.status==='error')setErr(p.import_error||'No se pudo importar el video.');
       }catch(e:any){setErr(e.message||'No se pudo consultar el estado de la importación.')}
@@ -107,7 +108,7 @@ export default function App(){
     try{
       const p=await createProject(file,file?undefined:yt);setProject(p);
       if(p.status==='ready'){
-        const e=Math.min(30,p.metadata?.duration||30);setStart(0);setEnd(e);setStartText('0:00');setEndText(sec(e));
+        const e=Math.min(30,p.metadata?.duration||30);setStart(0);setEnd(e);setStartText('0:00');setEndText(sec(e));setPlayhead(0);setPreviewPlaying(false);
       }
     }catch(e:any){setErr(e.message)}finally{setLoading('')}
   }
@@ -172,11 +173,17 @@ export default function App(){
               </div>}
             {project.transcript_status==='error'&&<p className="error-inline">{project.transcript_error}</p>}
           </section>
-          <section className="card"><h2>3. Marcar las zonas del video</h2><CropSelector videoUrl={preview} currentTime={start} crops={crops} active={activeCrop} onActive={setActiveCrop} onCrop={(k,c)=>setCrops(v=>({...v,[k]:c}))}/></section>
+          <section className="card"><h2>3. Marcar las zonas del video</h2>
+            <CropSelector videoUrl={preview} currentTime={playhead} crops={crops} active={activeCrop} onActive={setActiveCrop} onCrop={(k,c)=>setCrops(v=>({...v,[k]:c}))} onTimeChange={setPlayhead} onPlayingChange={setPreviewPlaying}/>
+            <div className="mobile-live-preview">
+              <div className="mobile-preview-head"><b>Vista vertical en vivo</b><span>{sec(playhead)}{previewPlaying?' · reproduciendo':''}</span></div>
+              <VerticalPreview projectId={project.id} videoUrl={preview} layout={layout} crops={crops} media={selectedMedia} mediaTransform={mediaTransform} currentTime={playhead} playing={previewPlaying}/>
+            </div>
+          </section>
         </div>
         <div className="rightcol">
           <section className="card sticky"><h2>4. Layout vertical</h2><div className="layout-buttons"><button className={layout==='one_media'?'active':''} onClick={()=>setLayout('one_media')}><i className="layout-icon one"></i>1 cámara + multimedia</button><button className={layout==='two_cameras'?'active':''} onClick={()=>setLayout('two_cameras')}><i className="layout-icon two"></i>2 cámaras</button><button className={layout==='two_media'?'active':''} onClick={()=>setLayout('two_media')}><i className="layout-icon three"></i>2 cámaras + multimedia</button></div>
-            <VerticalPreview projectId={project.id} videoUrl={preview} layout={layout} crops={crops} media={selectedMedia} mediaTransform={mediaTransform} currentTime={start}/>
+            <VerticalPreview projectId={project.id} videoUrl={preview} layout={layout} crops={crops} media={selectedMedia} mediaTransform={mediaTransform} currentTime={playhead} playing={previewPlaying}/>
             {layout!=='two_cameras'&&<div className="media-panel"><h3>Multimedia</h3><p>Si no eliges un archivo, se usa el recorte “Contenido” del video original.</p><label className="mini-upload"><Upload size={15}/>Subir imagen/video<input type="file" accept="image/*,video/*" onChange={e=>uploadMedia(e.target.files?.[0])}/></label><div className="row"><input value={mediaUrl} onChange={e=>setMediaUrl(e.target.value)} placeholder="YouTube, X o TikTok"/><button className="ghost" onClick={importMediaUrl}>Importar</button></div>{project.media&&project.media.length>0&&<select value={mediaId} onChange={e=>{setMediaId(e.target.value);setMediaTransform({...defaultMediaTransform})}}><option value="">Usar recorte del video</option>{project.media.map(m=><option key={m.id} value={m.id}>{m.name.slice(0,48)}</option>)}</select>}
               {selectedMedia&&<div className="media-controls">
                 <div className="fit-buttons"><button className={mediaTransform.fit==='contain'?'active':''} onClick={()=>setMediaTransform(v=>({...v,fit:'contain'}))}>Encajar</button><button className={mediaTransform.fit==='cover'?'active':''} onClick={()=>setMediaTransform(v=>({...v,fit:'cover'}))}>Llenar</button></div>
