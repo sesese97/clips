@@ -5,7 +5,7 @@ import VerticalPreview from './components/VerticalPreview';
 import { addMedia, createProject, fileUrl, getProject, renderClip, searchTranscript, startTranscription } from './lib/api';
 import type { Crop, Layout, MediaTransform, Project, SearchResult } from './types';
 
-const MAX_CLIP_SECONDS=60;
+const MAX_CLIP_SECONDS=90;
 const defaultCrops:Record<string,Crop>={
   camera1:{x:.04,y:.08,w:.42,h:.75}, camera2:{x:.52,y:.08,w:.42,h:.75}, content:{x:.44,y:.04,w:.54,h:.9}
 };
@@ -157,7 +157,7 @@ export default function App(){
   const transcriptProcessing=project?.transcript_status==='processing';
 
   return <div className="app-shell">
-    <aside><div className="brand">CLIP<span>SESE</span><small>Tu contenido, más lejos</small></div><nav><a className="active"><Film size={18}/>Nuevo clip</a><a><Wand2 size={18}/>Layouts</a></nav><div className="aside-note">MVP privado para clips de hasta 60 s. Usa contenido propio o con autorización.</div></aside>
+    <aside><div className="brand">CLIP<span>SESE</span><small>Tu contenido, más lejos</small></div><nav><a className="active"><Film size={18}/>Nuevo clip</a><a><Wand2 size={18}/>Layouts</a></nav><div className="aside-note">MVP privado para clips de hasta 90 s. Usa contenido propio o con autorización.</div></aside>
     <main>
       <header><div><h1>Creador de clips verticales</h1><p>YouTube o archivo original → busca el momento → acomoda cámaras → exporta.</p></div><div className="quality">1080 × 1920 · H.264 · CRF 17</div></header>
       {err&&<div className="error" onClick={()=>setErr('')}>{err}</div>}{loading&&<div className="loading">{loading}</div>}
@@ -180,7 +180,7 @@ export default function App(){
                   <label>Fin<input type="text" inputMode="decimal" value={endText} placeholder="5:21" onChange={e=>editTime('end',e.target.value)} onBlur={()=>setEndText(sec(end))} onKeyDown={e=>{if(e.key==='Enter')setEndText(sec(end))}}/></label>
                   <div className={clipLen<=0||clipLen>MAX_CLIP_SECONDS?'duration bad':'duration'}>{clipLen.toFixed(1)} s / {MAX_CLIP_SECONDS} s</div>
                 </div>
-                <p style={{fontSize:12,opacity:.65,marginTop:8}}>Puedes escribir 4:21, 12:05.5 o 1:02:10. El clip final puede durar hasta 60 s.</p>
+                <p style={{fontSize:12,opacity:.65,marginTop:8}}>Puedes escribir 4:21, 12:05.5 o 1:02:10. El clip final puede durar hasta 90 s. Entre 60 y 90 s el render puede tardar un poco más.</p>
               </div>
               :<div>
                 <div className="row"><input value={query} onChange={e=>setQuery(e.target.value)} onKeyDown={e=>e.key==='Enter'&&doSearch()} placeholder={mode==='keyword'?'Ej. DeVonta Smith':'Ej. cuando hablamos de DeVonta Smith o receptores baratos'}/><button onClick={doSearch} disabled={transcriptProcessing}><Search size={16}/>{transcriptProcessing?'Preparando…':'Buscar'}</button></div>
