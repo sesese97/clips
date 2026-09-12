@@ -332,8 +332,8 @@ def _render_source(project_id: str, req: RenderRequest, render_id: str) -> tuple
 def render_clip(project_id: str, req: RenderRequest) -> dict:
     if req.end <= req.start:
         raise ValueError("El final debe ser posterior al inicio")
-    if req.end - req.start > 60.001:
-        raise ValueError("Los clips no pueden exceder 60 segundos")
+    if req.end - req.start > 90.001:
+        raise ValueError("Los clips no pueden exceder 90 segundos")
     if req.layout in {"two_cameras", "two_media"} and req.camera2 is None:
         raise ValueError("El layout requiere cámara 2")
     if req.layout in {"one_media", "two_media"} and not req.media_id and req.content is None:
