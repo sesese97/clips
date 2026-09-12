@@ -380,10 +380,10 @@ def render_clip(project_id: str, req: RenderRequest) -> dict:
                 filters.append(_media_filter("1:v", 1080, 1200, "media", req))
             else:
                 filters.append(_crop_filter("s1", req.content, 1080, 1200, "media"))
-            filters.append("[cam1][media]vstack=inputs=2[outv]")
+            filters.append("[cam1][media]vstack=inputs=2[stacked]")
         elif req.layout == "two_cameras":
             filters.append(_crop_filter("s1", req.camera2, 1080, 960, "cam2"))
-            filters.append("[cam1][cam2]vstack=inputs=2[outv]")
+            filters.append("[cam1][cam2]vstack=inputs=2[stacked]")
         else:
             filters.append(_crop_filter("s1", req.camera2, 540, 720, "cam2"))
             filters.append("[cam1][cam2]hstack=inputs=2[top]")
@@ -391,15 +391,23 @@ def render_clip(project_id: str, req: RenderRequest) -> dict:
                 filters.append(_media_filter("1:v", 1080, 1200, "media", req))
             else:
                 filters.append(_crop_filter("s2", req.content, 1080, 1200, "media"))
-            filters.append("[top][media]vstack=inputs=2[outv]")
+            filters.append("[top][media]vstack=inputs=2[stacked]")
+
+        # hstack/vstack puede heredar una tasa absurda de una multimedia externa (vimos 120 fps
+        # en un export de iPhone aunque la fuente principal era 60). Safari/iOS puede abrir el MP4
+        # pero negarse a reproducirlo. El archivo final queda deliberadamente CFR 60, H.264 High
+        # Level 4.2 y tag avc1: máxima compatibilidad con iPhone/TikTok/Shorts sin perder 60 fps.
+        filters.append("[stacked]fps=60,format=yuv420p,setsar=1[outv]")
 
         cmd += [
             "-filter_complex_threads", "1",
             "-filter_complex", ";".join(filters),
             "-map", "[outv]", "-map", "0:a?",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-profile:v", "high",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
+            "-profile:v", "high", "-level:v", "4.2", "-tag:v", "avc1",
             "-threads", "2", "-x264-params", "threads=2:lookahead_threads=1",
-            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k",
+            "-pix_fmt", "yuv420p", "-fps_mode", "cfr",
+            "-c:a", "aac", "-b:a", "256k", "-ar", "48000",
             "-movflags", "+faststart", "-shortest", str(out)
         ]
         try:
@@ -417,6 +425,9 @@ def render_clip(project_id: str, req: RenderRequest) -> dict:
             ) from e
 
         info = ffprobe(out)
+        # No registramos un export que el navegador móvil vaya a rechazar otra vez.
+        fps_text = str(info.get("fps") or info.get("r_frame_rate") or "")
+        print(f"[CLIPSESE] render ready: {out.name} {info.get('width')}x{info.get('height')} fps={fps_text} codec={info.get('video_codec')}", flush=True)
         item = {"id": render_id, "file": out.name, "metadata": info, "start": req.start, "end": req.end, "layout": req.layout}
         renders = read_json(pdir / "renders.json", []) or []
         renders.insert(0, item)
