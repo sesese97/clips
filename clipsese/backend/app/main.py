@@ -1,6 +1,7 @@
 import os
 import shutil
 import tempfile
+import threading
 import uuid
 from pathlib import Path
 
@@ -14,7 +15,12 @@ from .transcribe import prepare_youtube_transcript, transcribe_project
 from .utils import is_allowed_url, project_dir, read_json, runtime_diagnostics, write_json
 from .video import add_media_upload, add_media_url, ingest_upload, ingest_youtube, render_clip
 
-app = FastAPI(title="ClipSese API", version="0.4.1")
+app = FastAPI(title="ClipSese API", version="0.4.2")
+
+# Railway tiene un contenedor pequeño. Un solo render de 90 s sí cabe, pero dos o tres
+# FFmpeg/yt-dlp simultáneos pueden agotar la RAM. Serializamos los renders pesados para
+# proteger el servicio; las búsquedas, previews y descargas siguen respondiendo normalmente.
+_render_lock = threading.Lock()
 
 origins = [
     x.strip().rstrip("/")
@@ -48,7 +54,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.4.1", "runtime": runtime_diagnostics()}
+    return {"ok": True, "version": "0.4.2", "runtime": runtime_diagnostics(), "render_busy": _render_lock.locked()}
 
 
 @app.post("/api/projects")
@@ -150,13 +156,21 @@ async def add_media(project_id: str, file: UploadFile | None = File(default=None
 
 @app.post("/api/projects/{project_id}/render")
 def render(project_id: str, req: RenderRequest):
+    if not _render_lock.acquire(blocking=False):
+        raise HTTPException(
+            409,
+            "ClipSese ya está renderizando otro video. Espera a que termine antes de volver a exportar."
+        )
     try:
-        return render_clip(project_id, req)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        print(f"[CLIPSESE] render ERROR: {type(e).__name__}: {e}", flush=True)
-        raise HTTPException(500, str(e))
+        try:
+            return render_clip(project_id, req)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except Exception as e:
+            print(f"[CLIPSESE] render ERROR: {type(e).__name__}: {e}", flush=True)
+            raise HTTPException(500, str(e))
+    finally:
+        _render_lock.release()
 
 
 @app.get("/files/{project_id}/{filename}")
