@@ -55,7 +55,7 @@ const importLabels:Record<string,string>={
 export default function App(){
   const [project,setProject]=useState<Project|null>(null); const [yt,setYt]=useState(''); const [loading,setLoading]=useState(''); const [err,setErr]=useState('');
   const [start,setStart]=useState(0); const [end,setEnd]=useState(30); const [startText,setStartText]=useState('0:00'); const [endText,setEndText]=useState('0:30');
-  const [playhead,setPlayhead]=useState(0); const [previewPlaying,setPreviewPlaying]=useState(false);
+  const [playhead,setPlayhead]=useState(0); const [previewPlaying,setPreviewPlaying]=useState(false); const [rendering,setRendering]=useState(false);
   const [mode,setMode]=useState<'time'|'keyword'|'theme'>('time'); const [query,setQuery]=useState(''); const [results,setResults]=useState<SearchResult[]>([]);
   const [layout,setLayout]=useState<Layout>('one_media'); const [crops,setCrops]=useState(defaultCrops); const [activeCrop,setActiveCrop]=useState('camera1'); const [mediaId,setMediaId]=useState<string>(''); const [mediaUrl,setMediaUrl]=useState('');
   const [mediaTransform,setMediaTransform]=useState<MediaTransform>(defaultMediaTransform);
@@ -139,8 +139,9 @@ export default function App(){
     }catch(e:any){setErr(e.message||'No se pudo descargar el video.')}finally{setLoading('')}
   }
   async function render(){
-    if(!project)return;
+    if(!project||rendering)return;
     if(clipLen<=0||clipLen>MAX_CLIP_SECONDS){setErr(`El clip debe durar entre 0 y ${MAX_CLIP_SECONDS} segundos`);return}
+    setRendering(true);
     setLoading(project.source_url?'Obteniendo el tramo en máxima calidad y renderizando…':'Renderizando a 1080×1920…');
     try{
       const body:any={start,end,layout,camera1:crops.camera1};
@@ -150,7 +151,7 @@ export default function App(){
         else body.content=crops.content;
       }
       const r=await renderClip(project.id,body);await refresh();window.open(fileUrl(project.id,r.file),'_blank');
-    }catch(e:any){setErr(e.message)}finally{setLoading('')}
+    }catch(e:any){setErr(e.message)}finally{setRendering(false);setLoading('')}
   }
 
   const transcriptReady=project?.transcript_status==='ready';
@@ -209,7 +210,7 @@ export default function App(){
                 <button className="ghost reset-media" onClick={()=>setMediaTransform({...defaultMediaTransform})}>Restablecer encuadre</button>
               </div>}
             </div>}
-            <div className="clip-summary"><span>Inicio <b>{sec(start)}</b></span><span>Fin <b>{sec(end)}</b></span><span>Duración <b>{clipLen.toFixed(1)} s</b></span></div><button className="export" onClick={render} disabled={clipLen<=0||clipLen>MAX_CLIP_SECONDS}><Download size={18}/>Exportar máxima calidad</button>
+            <div className="clip-summary"><span>Inicio <b>{sec(start)}</b></span><span>Fin <b>{sec(end)}</b></span><span>Duración <b>{clipLen.toFixed(1)} s</b></span></div><button className="export" onClick={render} disabled={rendering||clipLen<=0||clipLen>MAX_CLIP_SECONDS}><Download size={18}/>{rendering?'Renderizando…':'Exportar máxima calidad'}</button>
             {project.renders&&project.renders.length>0&&<>
               <button className="download-latest" onClick={()=>downloadRender(project.renders![0].file,project.renders![0].start,project.renders![0].end)}><Download size={18}/>Descargar último MP4</button>
               <div className="recent"><h3>Exports recientes</h3>{project.renders.slice(0,3).map(r=><div className="recent-item" key={r.id}><a href={fileUrl(project.id,r.file)} target="_blank" rel="noreferrer">Ver · {sec(r.end-r.start)}</a><button className="recent-download" onClick={()=>downloadRender(r.file,r.start,r.end)}><Download size={13}/>Descargar</button></div>)}</div>
