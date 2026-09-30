@@ -7,6 +7,10 @@ $frontend = Join-Path $root 'frontend'
 $venv = Join-Path $backend '.venv'
 $pythonVenv = Join-Path $venv 'Scripts\python.exe'
 $localFfmpegBin = Join-Path $root 'local\tools\ffmpeg\bin'
+$appCache = Join-Path $root 'local\cache'
+$appTemp = Join-Path $root 'local\temp'
+$npmCache = Join-Path $appCache 'npm'
+$pipCache = Join-Path $appCache 'pip'
 
 function Refresh-LocalPath {
     $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
@@ -111,7 +115,17 @@ Write-Host "==========================================="
 Write-Host "      CLIPSESE - INSTALACION EN TU PC"
 Write-Host "==========================================="
 Write-Host "No se cargaran videos ni secretos a GitHub, Railway o Vercel."
+
+# Keep installation caches and temporary files on the same drive as ClipSese.
+# This prevents npm/pip from filling C:\Users\...\AppData when the project lives on D: or another disk.
+New-Item -ItemType Directory -Path @($appCache, $appTemp, $npmCache, $pipCache) -Force | Out-Null
+$env:TEMP = $appTemp
+$env:TMP = $appTemp
+$env:npm_config_cache = $npmCache
+$env:PIP_CACHE_DIR = $pipCache
 Refresh-LocalPath
+Write-Host "Temporales de instalacion: $appTemp" -ForegroundColor DarkGray
+Write-Host "Cache npm/pip: $appCache" -ForegroundColor DarkGray
 
 $pythonChoice = Get-Python
 if (-not $pythonChoice) {
@@ -183,7 +197,7 @@ Push-Location $frontend
 try {
     # Always build against localhost even if this machine inherited a cloud variable.
     $env:VITE_API_URL = 'http://127.0.0.1:8000'
-    & npm.cmd install --no-audit --no-fund
+    & npm.cmd install --no-audit --no-fund --prefer-online
     if ($LASTEXITCODE -ne 0) { throw 'npm install fallo.' }
     & npm.cmd run build
     if ($LASTEXITCODE -ne 0) { throw 'La compilacion de la interfaz fallo.' }
@@ -203,3 +217,4 @@ Write-Host ""
 Write-Host "LISTO. Para abrir ClipSese, doble clic en INICIAR_LOCAL.bat." -ForegroundColor Green
 Write-Host "La primera transcripcion con Whisper puede tardar mientras baja el modelo."
 Write-Host "No copies cookies ni secretos al repositorio."
+try { Remove-Item $appTemp -Recurse -Force -ErrorAction SilentlyContinue } catch {}
