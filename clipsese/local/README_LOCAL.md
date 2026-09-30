@@ -39,6 +39,7 @@ Los proyectos sin actividad se eliminan despues de 6 horas. El sitio envia una s
 ## Solucion rapida de problemas
 
 - **La app dice que no conecta:** revisa que INICIAR_LOCAL.bat siga abierto y visita http://127.0.0.1:8000/api/health. Deberia mostrar ok true y una version terminada en -local.
+- **FFmpeg falla al instalar por WinGet:** el instalador actualizado ya no depende de ese paquete. Descarga una copia portatil de FFmpeg Essentials directamente desde gyan.dev y la guarda solo dentro de `clipsese/local/tools/ffmpeg`. Si viste el error `El archivo de instalador anidado no existe`, descarga de nuevo la rama `clipsese-local-windows` o reemplaza tu carpeta `clipsese` por la nueva y vuelve a ejecutar INSTALAR_LOCAL.bat.
 - **El instalador no reconoce un programa recien instalado:** cierra la terminal y ejecuta INSTALAR_LOCAL.bat de nuevo; no borres nada.
 - **YouTube no importa:** comprueba Deno, prueba con un video original y actualiza yt-dlp mediante INSTALAR_LOCAL.bat. No vuelvas a poner cookies en Railway.
 - **La RTX no codifica:** no bloquea el flujo: ClipSese repite la exportacion con CPU. Para ver el modo seleccionado, consulta los logs.
