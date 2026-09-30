@@ -52,6 +52,12 @@ def _ingest_youtube_job(project_id: str, url: str):
 
 @app.get("/")
 def root():
+    # Root route is registered before StaticFiles, so local mode must explicitly
+    # serve the built React index here instead of returning API diagnostics.
+    if os.getenv("CLIPSESE_LOCAL") == "1":
+        index = Path(os.getenv("CLIPSESE_FRONTEND_DIST", "")) / "index.html"
+        if index.is_file():
+            return FileResponse(index, media_type="text/html")
     return {"app": "ClipSese API", "ok": True, "health": "/api/health", "docs": "/docs"}
 
 
