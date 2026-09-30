@@ -192,7 +192,7 @@ def download_render(project_id: str, filename: str):
     # rather than requiring JS to buffer a potentially huge video in memory.
     if not re.fullmatch(r"[a-f0-9]{16}", project_id):
         raise HTTPException(400, "ID de proyecto inválido")
-    if not re.fullmatch(r"clip_[a-f0-9]{12}\\.mp4", filename):
+    if not re.fullmatch(r"clip_[a-f0-9]{12}[.]mp4", filename):
         raise HTTPException(400, "Solo se pueden descargar exportaciones MP4")
     pdir = project_dir(project_id)
     existing = read_json(pdir / "renders.json", []) or []
