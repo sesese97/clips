@@ -22,7 +22,7 @@ if (-not (Get-Command 'ffmpeg.exe' -ErrorAction SilentlyContinue)) {
     Write-Host "No encuentro FFmpeg. Ejecuta de nuevo INSTALAR_LOCAL.bat." -ForegroundColor Red
     exit 1
 }
-New-Item -ItemType Directory -Force $work, $logs | Out-Null
+New-Item -ItemType Directory -Path @($work, $logs) -Force | Out-Null
 
 $env:STORAGE_DIR = $work
 $env:CLIPSESE_LOCAL = '1'
