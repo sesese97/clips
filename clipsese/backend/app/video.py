@@ -1,21 +1,84 @@
 import base64
 import os
 import shutil
+import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
 from .models import Crop, RenderRequest
 from .utils import CommandError, ffprobe, project_dir, read_json, run, write_json
 
-BGUTIL_SERVER = os.getenv("BGUTIL_SERVER", "/opt/bgutil-ytdlp-pot-provider/server")
+BGUTIL_SERVER = Path(os.getenv("BGUTIL_SERVER", "/opt/bgutil-ytdlp-pot-provider/server"))
+
+
+def _deno_path() -> str | None:
+    deno = shutil.which("deno")
+    if deno:
+        return deno
+    system_path = Path("/usr/local/bin/deno")
+    return str(system_path) if system_path.is_file() else None
+
+
+def _pot_available() -> bool:
+    # The remote PO-token helper is optional; local Windows needs neither
+    # this directory nor a second paid service.
+    return BGUTIL_SERVER.is_dir() and _deno_path() is not None
+
+
+
+_ENCODER_CACHE: str | None = None
+
+
+def _encoder_args(which: str) -> list[str]:
+    if which == "nvenc":
+        # NVENC CQ18 is visually high quality, but is not numerically CRF17.
+        return [
+            "-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr",
+            "-cq", "18", "-b:v", "0", "-profile:v", "high",
+            "-level:v", "4.2", "-tag:v", "avc1",
+        ]
+    return [
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
+        "-profile:v", "high", "-level:v", "4.2", "-tag:v", "avc1",
+        "-threads", "2", "-x264-params", "threads=2:lookahead_threads=1",
+    ]
+
+
+def _encoder_mode() -> str:
+    global _ENCODER_CACHE
+    preference = os.getenv("CLIPSESE_ENCODER", "cpu").lower()
+    if os.getenv("CLIPSESE_LOCAL") != "1" or preference not in {"auto", "nvenc"}:
+        return "cpu"
+    if _ENCODER_CACHE is not None:
+        return _ENCODER_CACHE
+    try:
+        probe = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+             "-i", "color=c=black:s=128x128:r=1", "-frames:v", "1",
+             "-c:v", "h264_nvenc", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=20,
+        )
+        _ENCODER_CACHE = "nvenc" if probe.returncode == 0 else "cpu"
+    except Exception:
+        _ENCODER_CACHE = "cpu"
+    print(f"[CLIPSESE] encoder selected: {_ENCODER_CACHE}", flush=True)
+    return _ENCODER_CACHE
 
 
 def _cookie_file() -> Path | None:
+    # Cookies are optional and remain on the user's PC; NEVER commit them.
+    local_file = os.getenv("YOUTUBE_COOKIES_FILE", "").strip().strip('"')
+    if local_file:
+        local_path = Path(local_file).expanduser()
+        if not local_path.is_file():
+            raise RuntimeError("El archivo local de cookies no existe.")
+        return local_path
     raw = os.getenv("YOUTUBE_COOKIES_B64", "").strip()
     if not raw:
         return None
-    path = Path("/tmp/clipsese_youtube_cookies.txt")
+    path = Path(tempfile.gettempdir()) / "clipsese_youtube_cookies.txt"
     try:
         path.write_bytes(base64.b64decode(raw, validate=True))
         return path
@@ -41,7 +104,7 @@ def _youtube_cmd(
     url: str,
     out_tpl: str,
     *,
-    format_selector: str,
+    format_selector: str | None,
     section: tuple[float, float] | None = None,
     use_pot: bool = True,
 ) -> list[str]:
@@ -52,12 +115,15 @@ def _youtube_cmd(
         "--retries", "3",
         "--fragment-retries", "3",
         "--no-progress",
-        "--js-runtimes", "deno:/usr/local/bin/deno",
         "--merge-output-format", "mp4",
-        "-f", format_selector,
     ]
+    if format_selector:
+        cmd += ["-f", format_selector]
 
-    if use_pot:
+    deno = _deno_path()
+    if deno:
+        cmd += ["--js-runtimes", f"deno:{deno}"]
+    if use_pot and _pot_available():
         cmd += [
             "--extractor-args", "youtube:player_client=mweb",
             "--extractor-args", f"youtubepot-bgutilscript:server_home={BGUTIL_SERVER}",
@@ -107,40 +173,65 @@ def _download_youtube(
     out_tpl = str(out_dir / f"{stem}.%(ext)s")
     _clean_partial_files(out_dir, stem)
 
-    attempts: list[tuple[str, bool, list[str]]] = [
-        ("mweb+POT", True, []),
+    attempts: list[tuple[str, bool, list[str]]] = []
+    if _pot_available():
+        attempts.append(("mweb+POT", True, []))
+    attempts += [
         ("default", False, []),
         ("web_embedded", False, ["--extractor-args", "youtube:player_client=web_embedded"]),
     ]
 
     last_error: Exception | None = None
-    for label, use_pot, extra in attempts:
-        cmd = _youtube_cmd(
-            url,
-            out_tpl,
-            format_selector=format_selector,
-            section=section,
-            use_pot=use_pot,
-        )
-        if extra:
-            cmd = cmd[:-3] + extra + cmd[-3:]
-        try:
-            print(f"[CLIPSESE] YouTube attempt: {label}", flush=True)
-            run(cmd, timeout=timeout)
-            return _pick_download(out_dir, stem)
-        except CommandError as e:
-            last_error = e
-            low = str(e).lower()
-            if not any(x in low for x in ("sign in to confirm", "not a bot", "login_required", "403", "429", "po token")):
-                if "javascript runtime" in low or "js challenge" in low:
-                    raise RuntimeError("El runtime de YouTube no quedó disponible en el contenedor.") from e
-                raise RuntimeError(f"YouTube no pudo importarse: {str(e)[-1800:]}") from e
 
-    raise RuntimeError(
-        "YouTube sigue rechazando la IP de Railway incluso con PO Token. "
-        "ClipSese ya probó POT y clientes alternativos. En ese caso la alternativa estable "
-        "es usar Archivo original o añadir cookies de una cuenta dedicada."
-    ) from last_error
+    # YouTube does not expose the same format set for every video/client. A strict
+    # H.264/MP4 selector is nice when available but must never make the whole app fail.
+    # Try the requested selector, then a broad best stream, then yt-dlp's own default.
+    selectors: list[str | None] = []
+    for selector in (format_selector, "bv*+ba/b", None):
+        if selector not in selectors:
+            selectors.append(selector)
+
+    for selector in selectors:
+        selector_label = selector or "yt-dlp-default"
+        for label, use_pot, extra in attempts:
+            cmd = _youtube_cmd(
+                url,
+                out_tpl,
+                format_selector=selector,
+                section=section,
+                use_pot=use_pot,
+            )
+            if extra:
+                # Insert client args before output template + URL.
+                cmd = cmd[:-3] + extra + cmd[-3:]
+            try:
+                print(f"[CLIPSESE] YouTube attempt: {label}; format={selector_label}", flush=True)
+                run(cmd, timeout=timeout)
+                return _pick_download(out_dir, stem)
+            except CommandError as e:
+                last_error = e
+                low = str(e).lower()
+                _clean_partial_files(out_dir, stem)
+
+                # Format availability is normal and video-specific. Move to the next
+                # selector instead of treating it as a fatal import error.
+                if "requested format is not available" in low or "requested format" in low and "not available" in low:
+                    break
+
+                # Authentication/rate-limit errors may differ by YouTube client.
+                if any(x in low for x in ("sign in to confirm", "not a bot", "login_required", "403", "429", "po token")):
+                    continue
+
+                if "javascript runtime" in low or "js challenge" in low:
+                    raise RuntimeError("YouTube necesita Deno/JavaScript y el runtime local no respondió.") from e
+
+                # Other extractor errors may still be client-specific, so try the next
+                # client/selector combination before surfacing the final diagnostic.
+                continue
+
+    if last_error:
+        raise RuntimeError(f"YouTube no pudo importarse después de probar formatos alternativos: {str(last_error)[-1800:]}") from last_error
+    raise RuntimeError("YouTube no pudo importarse y no devolvió un diagnóstico.")
 
 
 def ingest_upload(project_id: str, src: Path, original_name: str) -> dict:
@@ -176,8 +267,9 @@ def ingest_youtube(project_id: str, url: str) -> dict:
             pdir,
             "preview_source",
             format_selector=(
-                "b[ext=mp4][vcodec^=avc1][height<=480]/"
-                "b[ext=mp4][height<=480]/b[height<=480]"
+                "b[height<=720]/"
+                "bv*[height<=720]+ba/"
+                "b"
             ),
             timeout=900,
         )
@@ -399,19 +491,30 @@ def render_clip(project_id: str, req: RenderRequest) -> dict:
         # Level 4.2 y tag avc1: máxima compatibilidad con iPhone/TikTok/Shorts sin perder 60 fps.
         filters.append("[stacked]fps=60,format=yuv420p,setsar=1[outv]")
 
+        encoder = _encoder_mode()
         cmd += [
             "-filter_complex_threads", "1",
             "-filter_complex", ";".join(filters),
             "-map", "[outv]", "-map", "0:a?",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
-            "-profile:v", "high", "-level:v", "4.2", "-tag:v", "avc1",
-            "-threads", "2", "-x264-params", "threads=2:lookahead_threads=1",
+            *_encoder_args(encoder),
             "-pix_fmt", "yuv420p", "-fps_mode", "cfr",
             "-c:a", "aac", "-b:a", "256k", "-ar", "48000",
             "-movflags", "+faststart", "-shortest", str(out)
         ]
         try:
-            run(cmd, timeout=1800)
+            try:
+                run(cmd, timeout=1800)
+            except CommandError:
+                if encoder != "nvenc":
+                    raise
+                # Keep the project usable even when the NVIDIA driver rejects NVENC.
+                print("[CLIPSESE] NVENC failed; retrying this clip with libx264.", flush=True)
+                enc_start = cmd.index("-c:v")
+                enc_end = cmd.index("-pix_fmt", enc_start)
+                cmd = cmd[:enc_start] + _encoder_args("cpu") + cmd[enc_end:]
+                if out.exists():
+                    out.unlink()
+                run(cmd, timeout=1800)
         except CommandError as e:
             if out.exists():
                 try:

@@ -1,6 +1,17 @@
 import type { Crop, Layout, Project, SearchResult } from '../types';
 
-export const API = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/+$/, '');
+// Native Windows app serves React and API from one local process.
+// A copied cloud .env must never redirect local requests to Railway.
+const host = window.location.hostname.toLowerCase();
+export const IS_LOCAL = (['127.0.0.1', 'localhost'].includes(host) && window.location.port === '8000')
+  || (host.endsWith('.ts.net') && window.location.protocol === 'https:')
+  || (window.location.port === '8000' && (host.startsWith('192.168.') || host.startsWith('10.') || (host.startsWith('172.') && Number(host.split('.')[1]) >= 16 && Number(host.split('.')[1]) <= 31)));
+// Tailscale Serve is HTTPS and proxies the app on the Windows computer.
+// Calling localhost from an iPad would call the iPad itself: always use same origin.
+export const API = (IS_LOCAL
+  ? window.location.origin
+  : (import.meta.env.VITE_API_URL || 'http://localhost:8000')
+).replace(/\/+$/, '');
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -15,7 +26,9 @@ async function request(input: RequestInfo | URL, init?: RequestInit) {
   try {
     return await fetch(input, init);
   } catch {
-    throw new Error('No se pudo conectar con el servidor de ClipSese. Revisa que Railway esté Online.');
+    throw new Error(IS_LOCAL
+      ? 'El motor local de ClipSese no responde. Mantén abierta la ventana de INICIAR_LOCAL.'
+      : 'No se pudo conectar con el servidor de ClipSese. Revisa que Railway esté Online.');
   }
 }
 
@@ -58,3 +71,10 @@ export async function renderClip(id: string, body: {
 }
 
 export const fileUrl = (projectId: string, file: string) => `${API}/files/${projectId}/${encodeURIComponent(file)}`;
+
+export async function finishProject(id: string): Promise<{deleted:boolean}> {
+  return json(await request(`${API}/api/projects/${id}/finish`, { method:'POST' }));
+}
+
+export const downloadUrl = (projectId:string, filename:string) =>
+  `${API}/download/${encodeURIComponent(projectId)}/${encodeURIComponent(filename)}`;

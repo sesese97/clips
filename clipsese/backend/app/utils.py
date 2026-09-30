@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -45,11 +46,14 @@ def binary_version(command: list[str]) -> str | None:
 
 
 def runtime_diagnostics() -> dict:
+    deno_path = shutil.which("deno")
+    if not deno_path and Path("/usr/local/bin/deno").is_file():
+        deno_path = "/usr/local/bin/deno"
     return {
         "ffmpeg": binary_version(["ffmpeg", "-version"]),
-        "yt_dlp": binary_version(["python", "-m", "yt_dlp", "--version"]),
-        "deno": binary_version(["/usr/local/bin/deno", "--version"]),
-        "deno_path": shutil.which("deno"),
+        "yt_dlp": binary_version([sys.executable, "-m", "yt_dlp", "--version"]),
+        "deno": binary_version([deno_path, "--version"]) if deno_path else None,
+        "deno_path": deno_path,
         "storage_dir": str(STORAGE_DIR),
     }
 

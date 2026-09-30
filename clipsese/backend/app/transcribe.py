@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Lock
 
 from .utils import project_dir, read_json, run, write_json
-from .video import _cookie_file, source_path
+from .video import _cookie_file, _deno_path, _pot_available, source_path
 
 _model = None
 _model_lock = Lock()
@@ -54,8 +54,10 @@ def _caption_cmd(url: str, out_tpl: str, *, mode: str) -> list[str]:
         "--write-auto-subs",
         "--sub-langs", "es-orig,es.*,es,en-orig,en.*,en",
         "--sub-format", "json3",
-        "--js-runtimes", "deno:/usr/local/bin/deno",
     ]
+    deno = _deno_path()
+    if deno:
+        cmd += ["--js-runtimes", f"deno:{deno}"]
 
     if mode == "mweb_pot":
         cmd += [
@@ -161,7 +163,7 @@ def prepare_youtube_transcript(project_id: str):
     project["transcript_hint"] = "Preparando subtítulos de YouTube para búsqueda…"
     write_json(pdir / "project.json", project)
 
-    attempts = ["mweb_pot", "default", "web_embedded"]
+    attempts = (["mweb_pot"] if _pot_available() else []) + ["default", "web_embedded"]
     errors: list[str] = []
 
     for mode in attempts:
