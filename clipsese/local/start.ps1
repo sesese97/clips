@@ -4,8 +4,8 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $backend = Join-Path $root 'backend'
 $frontendDist = Join-Path $root 'frontend\dist'
 $python = Join-Path $backend '.venv\Scripts\python.exe'
-$work = Join-Path $env:LOCALAPPDATA 'ClipSese\Work'
-$logs = Join-Path $env:LOCALAPPDATA 'ClipSese\Logs'
+$work = Join-Path $root 'local\work'
+$logs = Join-Path $root 'local\logs'
 $localFfmpegBin = Join-Path $root 'local\tools\ffmpeg\bin'
 
 Write-Host "==========================================="
