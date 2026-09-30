@@ -1,6 +1,7 @@
 import base64
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -25,6 +26,45 @@ def _pot_available() -> bool:
     # this directory nor a second paid service.
     return BGUTIL_SERVER.is_dir() and _deno_path() is not None
 
+
+
+_ENCODER_CACHE: str | None = None
+
+
+def _encoder_args(which: str) -> list[str]:
+    if which == "nvenc":
+        # NVENC CQ18 is visually high quality, but is not numerically CRF17.
+        return [
+            "-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr",
+            "-cq", "18", "-b:v", "0", "-profile:v", "high",
+            "-level:v", "4.2", "-tag:v", "avc1",
+        ]
+    return [
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
+        "-profile:v", "high", "-level:v", "4.2", "-tag:v", "avc1",
+        "-threads", "2", "-x264-params", "threads=2:lookahead_threads=1",
+    ]
+
+
+def _encoder_mode() -> str:
+    global _ENCODER_CACHE
+    preference = os.getenv("CLIPSESE_ENCODER", "cpu").lower()
+    if os.getenv("CLIPSESE_LOCAL") != "1" or preference not in {"auto", "nvenc"}:
+        return "cpu"
+    if _ENCODER_CACHE is not None:
+        return _ENCODER_CACHE
+    try:
+        probe = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+             "-i", "color=c=black:s=128x128:r=1", "-frames:v", "1",
+             "-c:v", "h264_nvenc", "-f", "null", "-"],
+            capture_output=True, text=True, timeout=20,
+        )
+        _ENCODER_CACHE = "nvenc" if probe.returncode == 0 else "cpu"
+    except Exception:
+        _ENCODER_CACHE = "cpu"
+    print(f"[CLIPSESE] encoder selected: {_ENCODER_CACHE}", flush=True)
+    return _ENCODER_CACHE
 
 
 def _cookie_file() -> Path | None:
@@ -425,19 +465,30 @@ def render_clip(project_id: str, req: RenderRequest) -> dict:
         # Level 4.2 y tag avc1: máxima compatibilidad con iPhone/TikTok/Shorts sin perder 60 fps.
         filters.append("[stacked]fps=60,format=yuv420p,setsar=1[outv]")
 
+        encoder = _encoder_mode()
         cmd += [
             "-filter_complex_threads", "1",
             "-filter_complex", ";".join(filters),
             "-map", "[outv]", "-map", "0:a?",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "17",
-            "-profile:v", "high", "-level:v", "4.2", "-tag:v", "avc1",
-            "-threads", "2", "-x264-params", "threads=2:lookahead_threads=1",
+            *_encoder_args(encoder),
             "-pix_fmt", "yuv420p", "-fps_mode", "cfr",
             "-c:a", "aac", "-b:a", "256k", "-ar", "48000",
             "-movflags", "+faststart", "-shortest", str(out)
         ]
         try:
-            run(cmd, timeout=1800)
+            try:
+                run(cmd, timeout=1800)
+            except CommandError:
+                if encoder != "nvenc":
+                    raise
+                # Keep the project usable even when the NVIDIA driver rejects NVENC.
+                print("[CLIPSESE] NVENC failed; retrying this clip with libx264.", flush=True)
+                enc_start = cmd.index("-c:v")
+                enc_end = cmd.index("-pix_fmt", enc_start)
+                cmd = cmd[:enc_start] + _encoder_args("cpu") + cmd[enc_end:]
+                if out.exists():
+                    out.unlink()
+                run(cmd, timeout=1800)
         except CommandError as e:
             if out.exists():
                 try:
