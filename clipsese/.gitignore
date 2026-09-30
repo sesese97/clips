@@ -6,6 +6,7 @@ frontend/dist/
 frontend/.env
 frontend/.env.*
 local/private/
+local/tools/
 local/*.log
 local/*.txt
 *.cookies.txt
