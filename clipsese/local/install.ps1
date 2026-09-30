@@ -6,11 +6,12 @@ $backend = Join-Path $root 'backend'
 $frontend = Join-Path $root 'frontend'
 $venv = Join-Path $backend '.venv'
 $pythonVenv = Join-Path $venv 'Scripts\python.exe'
+$localFfmpegBin = Join-Path $root 'local\tools\ffmpeg\bin'
 
 function Refresh-LocalPath {
     $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $user = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $env:Path = "$env:LOCALAPPDATA\Microsoft\WinGet\Links;$env:USERPROFILE\.deno\bin;$machine;$user;$env:Path"
+    $env:Path = "$localFfmpegBin;$env:LOCALAPPDATA\Microsoft\WinGet\Links;$env:USERPROFILE\.deno\bin;$machine;$user;$env:Path"
 }
 
 function Has-Tool([string] $tool) {
@@ -37,6 +38,42 @@ function Get-Python {
         }
     }
     return $null
+}
+
+function Install-LocalFfmpeg {
+    # WinGet's Gyan wrapper can occasionally fail after extraction because its
+    # nested relative path changes between FFmpeg releases. ClipSese avoids that
+    # packaging layer and keeps a portable FFmpeg ONLY inside this app.
+    $toolsRoot = Split-Path $localFfmpegBin -Parent
+    $zip = Join-Path $env:TEMP 'clipsese-ffmpeg-release-essentials.zip'
+    $extract = Join-Path $env:TEMP ('clipsese-ffmpeg-' + [Guid]::NewGuid().ToString('N'))
+    $url = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+    Write-Host ""
+    Write-Host "Preparando FFmpeg portatil para ClipSese (sin instalarlo en todo Windows)..." -ForegroundColor Cyan
+    try {
+        Remove-Item $zip -Force -ErrorAction SilentlyContinue
+        Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path $extract -Force | Out-Null
+        Invoke-WebRequest -Uri $url -OutFile $zip
+        Write-Host "Extrayendo FFmpeg..."
+        Expand-Archive -Path $zip -DestinationPath $extract -Force
+        $ffmpegExe = Get-ChildItem $extract -Recurse -File -Filter 'ffmpeg.exe' | Select-Object -First 1
+        $ffprobeExe = Get-ChildItem $extract -Recurse -File -Filter 'ffprobe.exe' | Select-Object -First 1
+        if (-not $ffmpegExe -or -not $ffprobeExe) {
+            throw 'El ZIP no contenia ffmpeg.exe y ffprobe.exe.'
+        }
+        Remove-Item $toolsRoot -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path $localFfmpegBin -Force | Out-Null
+        Copy-Item (Join-Path $ffmpegExe.Directory.FullName '*') $localFfmpegBin -Recurse -Force
+        Refresh-LocalPath
+        if (-not (Has-Tool 'ffmpeg.exe') -or -not (Has-Tool 'ffprobe.exe')) {
+            throw 'FFmpeg se extrajo pero Windows no lo puede ejecutar desde ClipSese.'
+        }
+        Write-Host "FFmpeg portatil listo para ClipSese." -ForegroundColor Green
+    } finally {
+        Remove-Item $zip -Force -ErrorAction SilentlyContinue
+        Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Install-Package([string] $name, [string] $id) {
@@ -68,7 +105,7 @@ if (-not (Has-Tool 'node.exe') -or -not (Has-Tool 'npm.cmd')) {
     Install-Package 'Node.js LTS' 'OpenJS.NodeJS.LTS'
 }
 if (-not (Has-Tool 'ffmpeg.exe') -or -not (Has-Tool 'ffprobe.exe')) {
-    Install-Package 'FFmpeg' 'Gyan.FFmpeg'
+    Install-LocalFfmpeg
 }
 if (-not (Has-Tool 'deno.exe')) {
     Install-Package 'Deno (para importar YouTube)' 'DenoLand.Deno'
