@@ -210,8 +210,8 @@ if (-not (Test-Path (Join-Path $frontend 'dist\index.html'))) {
 
 Write-Host ""
 Write-Host "[3/3] Preparando almacenamiento temporal..."
-$work = Join-Path $env:LOCALAPPDATA 'ClipSese\Work'
-$logs = Join-Path $env:LOCALAPPDATA 'ClipSese\Logs'
+$work = Join-Path $root 'local\work'
+$logs = Join-Path $root 'local\logs'
 New-Item -ItemType Directory -Path @($work, $logs) -Force | Out-Null
 Write-Host ""
 Write-Host "LISTO. Para abrir ClipSese, doble clic en INICIAR_LOCAL.bat." -ForegroundColor Green
