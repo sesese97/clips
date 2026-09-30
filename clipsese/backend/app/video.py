@@ -2,20 +2,43 @@ import base64
 import os
 import shutil
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
 from .models import Crop, RenderRequest
 from .utils import CommandError, ffprobe, project_dir, read_json, run, write_json
 
-BGUTIL_SERVER = os.getenv("BGUTIL_SERVER", "/opt/bgutil-ytdlp-pot-provider/server")
+BGUTIL_SERVER = Path(os.getenv("BGUTIL_SERVER", "/opt/bgutil-ytdlp-pot-provider/server"))
+
+
+def _deno_path() -> str | None:
+    deno = shutil.which("deno")
+    if deno:
+        return deno
+    system_path = Path("/usr/local/bin/deno")
+    return str(system_path) if system_path.is_file() else None
+
+
+def _pot_available() -> bool:
+    # The remote PO-token helper is optional; local Windows needs neither
+    # this directory nor a second paid service.
+    return BGUTIL_SERVER.is_dir() and _deno_path() is not None
+
 
 
 def _cookie_file() -> Path | None:
+    # Cookies are optional and remain on the user's PC; NEVER commit them.
+    local_file = os.getenv("YOUTUBE_COOKIES_FILE", "").strip().strip('"')
+    if local_file:
+        local_path = Path(local_file).expanduser()
+        if not local_path.is_file():
+            raise RuntimeError("El archivo local de cookies no existe.")
+        return local_path
     raw = os.getenv("YOUTUBE_COOKIES_B64", "").strip()
     if not raw:
         return None
-    path = Path("/tmp/clipsese_youtube_cookies.txt")
+    path = Path(tempfile.gettempdir()) / "clipsese_youtube_cookies.txt"
     try:
         path.write_bytes(base64.b64decode(raw, validate=True))
         return path
@@ -52,12 +75,14 @@ def _youtube_cmd(
         "--retries", "3",
         "--fragment-retries", "3",
         "--no-progress",
-        "--js-runtimes", "deno:/usr/local/bin/deno",
         "--merge-output-format", "mp4",
         "-f", format_selector,
     ]
 
-    if use_pot:
+    deno = _deno_path()
+    if deno:
+        cmd += ["--js-runtimes", f"deno:{deno}"]
+    if use_pot and _pot_available():
         cmd += [
             "--extractor-args", "youtube:player_client=mweb",
             "--extractor-args", f"youtubepot-bgutilscript:server_home={BGUTIL_SERVER}",
@@ -107,8 +132,10 @@ def _download_youtube(
     out_tpl = str(out_dir / f"{stem}.%(ext)s")
     _clean_partial_files(out_dir, stem)
 
-    attempts: list[tuple[str, bool, list[str]]] = [
-        ("mweb+POT", True, []),
+    attempts: list[tuple[str, bool, list[str]]] = []
+    if _pot_available():
+        attempts.append(("mweb+POT", True, []))
+    attempts += [
         ("default", False, []),
         ("web_embedded", False, ["--extractor-args", "youtube:player_client=web_embedded"]),
     ]
@@ -137,9 +164,8 @@ def _download_youtube(
                 raise RuntimeError(f"YouTube no pudo importarse: {str(e)[-1800:]}") from e
 
     raise RuntimeError(
-        "YouTube sigue rechazando la IP de Railway incluso con PO Token. "
-        "ClipSese ya probó POT y clientes alternativos. En ese caso la alternativa estable "
-        "es usar Archivo original o añadir cookies de una cuenta dedicada."
+        "YouTube ha rechazado la descarga. Prueba Archivo original, "
+        "actualiza yt-dlp/Deno o configura YOUTUBE_COOKIES_FILE en tu propia PC."
     ) from last_error
 
 
