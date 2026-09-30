@@ -1,6 +1,13 @@
 import type { Crop, Layout, Project, SearchResult } from '../types';
 
-export const API = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/+$/, '');
+// Native Windows app serves React and API from one local process.
+// A copied cloud .env must never redirect local requests to Railway.
+export const IS_LOCAL = ['127.0.0.1', 'localhost'].includes(window.location.hostname)
+  && window.location.port === '8000';
+export const API = (IS_LOCAL
+  ? window.location.origin
+  : (import.meta.env.VITE_API_URL || 'http://localhost:8000')
+).replace(/\/+$/, '');
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -15,7 +22,9 @@ async function request(input: RequestInfo | URL, init?: RequestInit) {
   try {
     return await fetch(input, init);
   } catch {
-    throw new Error('No se pudo conectar con el servidor de ClipSese. Revisa que Railway esté Online.');
+    throw new Error(IS_LOCAL
+      ? 'El motor local de ClipSese no responde. Mantén abierta la ventana de INICIAR_LOCAL.'
+      : 'No se pudo conectar con el servidor de ClipSese. Revisa que Railway esté Online.');
   }
 }
 
@@ -58,3 +67,7 @@ export async function renderClip(id: string, body: {
 }
 
 export const fileUrl = (projectId: string, file: string) => `${API}/files/${projectId}/${encodeURIComponent(file)}`;
+
+export async function finishProject(id: string): Promise<{deleted:boolean}> {
+  return json(await request(`${API}/api/projects/${id}/finish`, { method:'POST' }));
+}
