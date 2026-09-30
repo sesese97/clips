@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Download, Film, Link as LinkIcon, Search, Upload, Wand2 } from 'lucide-react';
 import CropSelector from './components/CropSelector';
 import VerticalPreview from './components/VerticalPreview';
-import { addMedia, createProject, fileUrl, getProject, renderClip, searchTranscript, startTranscription } from './lib/api';
+import { IS_LOCAL, addMedia, createProject, fileUrl, finishProject, getProject, renderClip, searchTranscript, startTranscription } from './lib/api';
 import type { Crop, Layout, MediaTransform, Project, SearchResult } from './types';
 
 const MAX_CLIP_SECONDS=90;
@@ -81,6 +81,24 @@ export default function App(){
   }
 
   async function refresh(){if(project){const p=await getProject(project.id);setProject(p);return p}}
+
+  // Keep a local project from being cleaned up while its browser tab is open.
+  useEffect(()=>{
+    if(!IS_LOCAL || !project?.id)return;
+    const id=project.id;
+    const keepAlive=()=>{if(document.visibilityState==='visible')getProject(id).catch(()=>{});};
+    const timer=window.setInterval(keepAlive,120000);
+    return ()=>window.clearInterval(timer);
+  },[project?.id]);
+
+  async function finishLocal(){
+    if(!project || rendering)return;
+    if(!window.confirm('¿Terminaste? Se borrarán de esta computadora el video temporal, la transcripción, multimedia y los clips aún guardados en ClipSese. Comprueba que ya descargaste tus MP4.'))return;
+    setLoading('Limpiando archivos temporales…');
+    try{await finishProject(project.id);setProject(null);setResults([]);setMediaId('');setErr('');}
+    catch(e:any){setErr(e.message||'No se pudo limpiar el proyecto.')}
+    finally{setLoading('');}
+  }
 
   useEffect(()=>{
     if(!project)return;
@@ -168,7 +186,7 @@ export default function App(){
       :project.status!=='ready'?
         <section className="card import-card"><h2>{project.status==='error'?'No se pudo importar':'Preparando video'}</h2><p>{project.status==='error'?(project.import_error||'La importación falló.'):(importLabels[project.import_stage||'queued']||'Procesando video…')}</p>{project.status==='importing'&&<p style={{opacity:.7}}>Para YouTube se prepara sólo una copia ligera de edición. La máxima calidad se obtiene únicamente al exportar el clip.</p>}<button className="ghost" onClick={()=>{setProject(null);setErr('')}}>{project.status==='error'?'Intentar otro video':'Cancelar / cambiar video'}</button></section>
       :<>
-      <section className="card projectbar"><div><b>{project.original_name}</b><span>{project.metadata.width}×{project.metadata.height} · {sec(project.metadata.duration)}</span></div><button className="ghost" onClick={()=>setProject(null)}>Cambiar video</button></section>
+      <section className="card projectbar"><div><b>{project.original_name}</b><span>{project.metadata.width}×{project.metadata.height} · {sec(project.metadata.duration)}{IS_LOCAL?' · MOTOR LOCAL':''}</span></div><div className="row"><button className="ghost" onClick={()=>setProject(null)}>Cambiar video</button>{IS_LOCAL&&<button className="ghost" onClick={finishLocal} disabled={rendering}>Finalizar y limpiar</button>}</div></section>
       <div className="workspace">
         <div className="leftcol">
           <section className="card">
