@@ -49,16 +49,28 @@ if (Test-Path $privateCookies) {
     Write-Host "Cookies locales detectadas (no se muestran ni se suben)."
 }
 
-# Do not overwrite another application on port 8000.
+# If an older ClipSese instance is still listening on port 8000, restart it so
+# newly downloaded Python fixes actually load. This is safe only after health
+# confirms the listener is ClipSese LOCAL; we never kill an unrelated app.
 try {
     $health = Invoke-RestMethod 'http://127.0.0.1:8000/api/health' -TimeoutSec 3
     if ($health.version -like '*local*' -and $health.ok) {
-        Write-Host "ClipSese ya esta abierto en tu computadora."
-        Start-Process 'http://127.0.0.1:8000/'
-        exit 0
+        Write-Host "Reiniciando el motor local para cargar la version mas reciente..." -ForegroundColor Cyan
+        try {
+            $listener = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction Stop | Select-Object -First 1
+            if ($listener -and $listener.OwningProcess) {
+                Stop-Process -Id $listener.OwningProcess -Force -ErrorAction Stop
+                Start-Sleep -Seconds 2
+            }
+        } catch {
+            Write-Host "No pude cerrar automaticamente la instancia anterior de ClipSese." -ForegroundColor Yellow
+            Write-Host "Cierra sus ventanas y vuelve a ejecutar INICIAR_LOCAL.bat."
+            exit 1
+        }
+    } else {
+        Write-Host "El puerto 8000 ya esta ocupado por otra aplicacion." -ForegroundColor Red
+        exit 1
     }
-    Write-Host "El puerto 8000 ya esta ocupado por otra aplicacion." -ForegroundColor Red
-    exit 1
 } catch {
     # Nobody is listening, so start the local service.
 }
