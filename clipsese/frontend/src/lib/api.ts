@@ -2,8 +2,12 @@ import type { Crop, Layout, Project, SearchResult } from '../types';
 
 // Native Windows app serves React and API from one local process.
 // A copied cloud .env must never redirect local requests to Railway.
-export const IS_LOCAL = ['127.0.0.1', 'localhost'].includes(window.location.hostname)
-  && window.location.port === '8000';
+const host = window.location.hostname.toLowerCase();
+export const IS_LOCAL = (['127.0.0.1', 'localhost'].includes(host) && window.location.port === '8000')
+  || (host.endsWith('.ts.net') && window.location.protocol === 'https:')
+  || (window.location.port === '8000' && (/^192\\.168\\./.test(host) || /^10\\./.test(host) || /^172\\.(1[6-9]|2[0-9]|3[01])\\./.test(host)));
+// Tailscale Serve is HTTPS and proxies the app on the Windows computer.
+// Calling localhost from an iPad would call the iPad itself: always use same origin.
 export const API = (IS_LOCAL
   ? window.location.origin
   : (import.meta.env.VITE_API_URL || 'http://localhost:8000')
@@ -71,3 +75,6 @@ export const fileUrl = (projectId: string, file: string) => `${API}/files/${proj
 export async function finishProject(id: string): Promise<{deleted:boolean}> {
   return json(await request(`${API}/api/projects/${id}/finish`, { method:'POST' }));
 }
+
+export const downloadUrl = (projectId:string, filename:string) =>
+  `${API}/download/${encodeURIComponent(projectId)}/${encodeURIComponent(filename)}`;
