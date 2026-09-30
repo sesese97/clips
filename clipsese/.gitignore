@@ -14,3 +14,7 @@ cookies.txt
 cookies.txt.txt
 __pycache__/
 *.py[cod]
+local/cache/
+local/temp/
+local/work/
+local/logs/
