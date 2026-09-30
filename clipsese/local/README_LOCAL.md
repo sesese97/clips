@@ -47,4 +47,4 @@ Los proyectos sin actividad se eliminan despues de 6 horas. El sitio envia una s
 
 Los logs viven en %LOCALAPPDATA%\ClipSese\Logs y los temporales en %LOCALAPPDATA%\ClipSese\Work. Ninguno se sube automaticamente a GitHub.
 
-No habilitamos acceso desde celular fuera de casa. Para eso habria que agregar autenticacion y un tunel seguro (nunca abrir el puerto 8000 directamente al internet).
+**iPad y uso fuera de casa:** esta misma versión incorpora CONFIGURAR_IPAD.bat para conectar el motor de Windows a Safari de iPad mediante Tailscale Serve (red privada, no pública). Instala la app Tailscale en PC e iPad y sigue las instrucciones de [README_IPAD.md](README_IPAD.md). La PC y el motor deben seguir encendidos. Revisa el plan que corresponda si lo utilizarás comercialmente.
