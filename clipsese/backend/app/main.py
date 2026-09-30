@@ -36,7 +36,7 @@ if "http://localhost:5173" not in origins:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=None if os.getenv("CLIPSESE_LOCAL") == "1" else r"https://[A-Za-z0-9-]+\\.vercel\\.app",
+    allow_origin_regex=None if os.getenv("CLIPSESE_LOCAL") == "1" else r"https://[A-Za-z0-9-]+[.]vercel[.]app",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
