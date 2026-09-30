@@ -5,7 +5,7 @@ import type { Crop, Layout, Project, SearchResult } from '../types';
 const host = window.location.hostname.toLowerCase();
 export const IS_LOCAL = (['127.0.0.1', 'localhost'].includes(host) && window.location.port === '8000')
   || (host.endsWith('.ts.net') && window.location.protocol === 'https:')
-  || (window.location.port === '8000' && (/^192\\.168\\./.test(host) || /^10\\./.test(host) || /^172\\.(1[6-9]|2[0-9]|3[01])\\./.test(host)));
+  || (window.location.port === '8000' && (host.startsWith('192.168.') || host.startsWith('10.') || (host.startsWith('172.') && Number(host.split('.')[1]) >= 16 && Number(host.split('.')[1]) <= 31)));
 // Tailscale Serve is HTTPS and proxies the app on the Windows computer.
 // Calling localhost from an iPad would call the iPad itself: always use same origin.
 export const API = (IS_LOCAL
