@@ -111,6 +111,18 @@ Get-Content $requirements | Where-Object { $_ -notmatch 'bgutil-ytdlp-pot-provid
 if ($LASTEXITCODE -ne 0) { throw 'La instalacion de Python fallo. Revisa el mensaje anterior.' }
 
 Write-Host ""
+Write-Host "Verificando que el backend Python importe sin errores..."
+Push-Location $backend
+try {
+    & $pythonVenv -m compileall -q 'app'
+    if ($LASTEXITCODE -ne 0) { throw 'Hay un error de sintaxis en el backend.' }
+    & $pythonVenv -c 'from app.main import app; print("Backend OK")'
+    if ($LASTEXITCODE -ne 0) { throw 'El backend no pudo importar. Revisa las dependencias.' }
+} finally {
+    Pop-Location
+}
+
+Write-Host ""
 Write-Host "[2/3] Preparando la interfaz..."
 Push-Location $frontend
 try {
@@ -131,7 +143,7 @@ Write-Host ""
 Write-Host "[3/3] Preparando almacenamiento temporal..."
 $work = Join-Path $env:LOCALAPPDATA 'ClipSese\Work'
 $logs = Join-Path $env:LOCALAPPDATA 'ClipSese\Logs'
-New-Item -ItemType Directory -Force $work, $logs | Out-Null
+New-Item -ItemType Directory -Path @($work, $logs) -Force | Out-Null
 Write-Host ""
 Write-Host "LISTO. Para abrir ClipSese, doble clic en INICIAR_LOCAL.bat." -ForegroundColor Green
 Write-Host "La primera transcripcion con Whisper puede tardar mientras baja el modelo."
