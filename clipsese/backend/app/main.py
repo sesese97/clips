@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -8,14 +9,16 @@ from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .football_search import keyword_search, theme_search
+from .local_cleanup import delete_project, start_cleanup_daemon, touch_project
 from .models import RenderRequest, SearchRequest
 from .transcribe import prepare_youtube_transcript, transcribe_project
 from .utils import is_allowed_url, project_dir, read_json, runtime_diagnostics, write_json
 from .video import add_media_upload, add_media_url, ingest_upload, ingest_youtube, render_clip
 
-app = FastAPI(title="ClipSese API", version="0.4.2")
+app = FastAPI(title="ClipSese API", version="0.5.0-local")
 
 # Railway tiene un contenedor pequeño. Un solo render de 90 s sí cabe, pero dos o tres
 # FFmpeg/yt-dlp simultáneos pueden agotar la RAM. Serializamos los renders pesados para
@@ -54,7 +57,7 @@ def root():
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "version": "0.4.2", "runtime": runtime_diagnostics(), "render_busy": _render_lock.locked()}
+    return {"ok": True, "version": "0.5.0-local", "runtime": runtime_diagnostics(), "render_busy": _render_lock.locked()}
 
 
 @app.post("/api/projects")
@@ -180,3 +183,34 @@ def files(project_id: str, filename: str):
     if not path.exists():
         raise HTTPException(404, "Archivo no encontrado")
     return FileResponse(path)
+
+
+
+# Local mode is deliberately bound to 127.0.0.1 by the Windows launcher.
+# No browser secrets, cloud data, or permanent render archive are required.
+if os.getenv("CLIPSESE_LOCAL") == "1":
+    @app.on_event("startup")
+    def _start_local_cleanup():
+        start_cleanup_daemon()
+
+    @app.middleware("http")
+    async def _keep_active_project(request, call_next):
+        response = await call_next(request)
+        if response.status_code < 400:
+            matched = re.search(r"^/(?:api/projects|files)/([a-f0-9]{16})(?:/|$)", request.url.path)
+            if matched:
+                touch_project(matched.group(1))
+        return response
+
+    @app.post("/api/projects/{project_id}/finish")
+    def finish_local_project(project_id: str):
+        if _render_lock.locked():
+            raise HTTPException(409, "Espera a que termine el render antes de cerrar el proyecto.")
+        if not re.fullmatch(r"[a-f0-9]{16}", project_id):
+            raise HTTPException(400, "ID de proyecto inválido")
+        return {"deleted": delete_project(project_id)}
+
+    # Build once during installation; users then open ClipSese at ONE address.
+    frontend_dist = Path(os.getenv("CLIPSESE_FRONTEND_DIST", ""))
+    if frontend_dist.is_dir() and (frontend_dist / "index.html").exists():
+        app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="clipsese-ui")
