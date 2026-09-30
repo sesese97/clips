@@ -186,6 +186,24 @@ def files(project_id: str, filename: str):
 
 
 
+@app.get("/download/{project_id}/{filename}")
+def download_render(project_id: str, filename: str):
+    # Explicit attachment header gives Safari/iPad its normal Save to Files flow,
+    # rather than requiring JS to buffer a potentially huge video in memory.
+    if not re.fullmatch(r"[a-f0-9]{16}", project_id):
+        raise HTTPException(400, "ID de proyecto inválido")
+    if not re.fullmatch(r"clip_[a-f0-9]{12}\\.mp4", filename):
+        raise HTTPException(400, "Solo se pueden descargar exportaciones MP4")
+    pdir = project_dir(project_id)
+    existing = read_json(pdir / "renders.json", []) or []
+    if not any(x.get("file") == filename for x in existing):
+        raise HTTPException(404, "Esta exportación ya no existe")
+    path = pdir / filename
+    if not path.is_file():
+        raise HTTPException(404, "El video temporal ya fue eliminado")
+    return FileResponse(path, media_type="video/mp4", filename=f"ClipSese_{filename}", content_disposition_type="attachment")
+
+
 # Local mode is deliberately bound to 127.0.0.1 by the Windows launcher.
 # No browser secrets, cloud data, or permanent render archive are required.
 if os.getenv("CLIPSESE_LOCAL") == "1":
@@ -197,7 +215,7 @@ if os.getenv("CLIPSESE_LOCAL") == "1":
     async def _keep_active_project(request, call_next):
         response = await call_next(request)
         if response.status_code < 400:
-            matched = re.search(r"^/(?:api/projects|files)/([a-f0-9]{16})(?:/|$)", request.url.path)
+            matched = re.search(r"^/(?:api/projects|files|download)/([a-f0-9]{16})(?:/|$)", request.url.path)
             if matched:
                 touch_project(matched.group(1))
         return response
