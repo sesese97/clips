@@ -170,8 +170,9 @@ Push-Location $backend
 try {
     & $pythonVenv -m compileall -q 'app'
     if ($LASTEXITCODE -ne 0) { throw 'Hay un error de sintaxis en el backend.' }
-    & $pythonVenv -c 'from app.main import app; print("Backend OK")'
+    & $pythonVenv -c "import app.main"
     if ($LASTEXITCODE -ne 0) { throw 'El backend no pudo importar. Revisa las dependencias.' }
+    Write-Host "Backend OK" -ForegroundColor Green
 } finally {
     Pop-Location
 }
