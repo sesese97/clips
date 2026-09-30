@@ -45,26 +45,43 @@ function Install-LocalFfmpeg {
     # nested relative path changes between FFmpeg releases. ClipSese avoids that
     # packaging layer and keeps a portable FFmpeg ONLY inside this app.
     $toolsRoot = Split-Path $localFfmpegBin -Parent
-    $zip = Join-Path $env:TEMP 'clipsese-ffmpeg-release-essentials.zip'
-    $extract = Join-Path $env:TEMP ('clipsese-ffmpeg-' + [Guid]::NewGuid().ToString('N'))
+    $downloadRoot = Join-Path $root 'local\tools\downloads'
+    $zip = Join-Path $downloadRoot 'ffmpeg-release-essentials.zip'
+    $extract = Join-Path $downloadRoot 'ffmpeg-extracted'
     $url = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
     Write-Host ""
     Write-Host "Preparando FFmpeg portatil para ClipSese (sin instalarlo en todo Windows)..." -ForegroundColor Cyan
     try {
+        New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
         Remove-Item $zip -Force -ErrorAction SilentlyContinue
         Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Path $extract -Force | Out-Null
+
         Invoke-WebRequest -Uri $url -OutFile $zip
         Write-Host "Extrayendo FFmpeg..."
-        Expand-Archive -Path $zip -DestinationPath $extract -Force
+
+        # PowerShell 5.1 Expand-Archive puede fallar con algunos ZIP de FFmpeg
+        # intentando borrar rutas internas que ya no existen. Usamos tar.exe,
+        # incluido en Windows 10/11, que maneja correctamente este ZIP.
+        $tar = Get-Command 'tar.exe' -ErrorAction SilentlyContinue
+        if ($tar) {
+            & $tar.Source -xf $zip -C $extract
+            if ($LASTEXITCODE -ne 0) { throw 'Windows tar no pudo extraer FFmpeg.' }
+        } else {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $extract)
+        }
+
         $ffmpegExe = Get-ChildItem $extract -Recurse -File -Filter 'ffmpeg.exe' | Select-Object -First 1
         $ffprobeExe = Get-ChildItem $extract -Recurse -File -Filter 'ffprobe.exe' | Select-Object -First 1
         if (-not $ffmpegExe -or -not $ffprobeExe) {
             throw 'El ZIP no contenia ffmpeg.exe y ffprobe.exe.'
         }
+
         Remove-Item $toolsRoot -Recurse -Force -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Path $localFfmpegBin -Force | Out-Null
         Copy-Item (Join-Path $ffmpegExe.Directory.FullName '*') $localFfmpegBin -Recurse -Force
+
         Refresh-LocalPath
         if (-not (Has-Tool 'ffmpeg.exe') -or -not (Has-Tool 'ffprobe.exe')) {
             throw 'FFmpeg se extrajo pero Windows no lo puede ejecutar desde ClipSese.'
