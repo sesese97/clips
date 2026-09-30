@@ -6,6 +6,7 @@ $frontendDist = Join-Path $root 'frontend\dist'
 $python = Join-Path $backend '.venv\Scripts\python.exe'
 $work = Join-Path $root 'local\work'
 $logs = Join-Path $root 'local\logs'
+$runtimeTemp = Join-Path $root 'local\temp\runtime'
 $localFfmpegBin = Join-Path $root 'local\tools\ffmpeg\bin'
 
 Write-Host "==========================================="
@@ -23,8 +24,13 @@ if (-not (Get-Command 'ffmpeg.exe' -ErrorAction SilentlyContinue)) {
     Write-Host "No encuentro FFmpeg de ClipSese. Ejecuta de nuevo INSTALAR_LOCAL.bat." -ForegroundColor Red
     exit 1
 }
-New-Item -ItemType Directory -Path @($work, $logs) -Force | Out-Null
+New-Item -ItemType Directory -Path @($work, $logs, $runtimeTemp) -Force | Out-Null
 
+# Starlette/UploadFile and Python use the system temp directory while parsing large uploads.
+# Keep that traffic on the same drive as ClipSese instead of a nearly-full C: drive.
+$env:TEMP = $runtimeTemp
+$env:TMP = $runtimeTemp
+$env:TMPDIR = $runtimeTemp
 $env:STORAGE_DIR = $work
 $env:CLIPSESE_LOCAL = '1'
 $env:CLIPSESE_FRONTEND_DIST = $frontendDist
@@ -90,6 +96,7 @@ Write-Host ""
 Write-Host "Manten ESTA ventana abierta mientras haces tus clips."
 Write-Host "Cuando termines, pulsa Ctrl+C o cierra esta ventana."
 Write-Host "Trabajo temporal: $work"
+Write-Host "TEMP de uploads: $runtimeTemp"
 Write-Host "Los proyectos sin actividad se borran a las seis horas."
 Write-Host "El boton Finalizar y limpiar borra inmediatamente el proyecto terminado."
 Start-Process 'http://127.0.0.1:8000/'
