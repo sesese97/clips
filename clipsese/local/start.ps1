@@ -6,6 +6,7 @@ $frontendDist = Join-Path $root 'frontend\dist'
 $python = Join-Path $backend '.venv\Scripts\python.exe'
 $work = Join-Path $env:LOCALAPPDATA 'ClipSese\Work'
 $logs = Join-Path $env:LOCALAPPDATA 'ClipSese\Logs'
+$localFfmpegBin = Join-Path $root 'local\tools\ffmpeg\bin'
 
 Write-Host "==========================================="
 Write-Host "       CLIPSESE - MOTOR LOCAL"
@@ -17,9 +18,9 @@ if (-not (Test-Path $python) -or -not (Test-Path (Join-Path $frontendDist 'index
 
 $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
 $user = [Environment]::GetEnvironmentVariable('Path', 'User')
-$env:Path = "$env:LOCALAPPDATA\Microsoft\WinGet\Links;$env:USERPROFILE\.deno\bin;$machine;$user;$env:Path"
+$env:Path = "$localFfmpegBin;$env:LOCALAPPDATA\Microsoft\WinGet\Links;$env:USERPROFILE\.deno\bin;$machine;$user;$env:Path"
 if (-not (Get-Command 'ffmpeg.exe' -ErrorAction SilentlyContinue)) {
-    Write-Host "No encuentro FFmpeg. Ejecuta de nuevo INSTALAR_LOCAL.bat." -ForegroundColor Red
+    Write-Host "No encuentro FFmpeg de ClipSese. Ejecuta de nuevo INSTALAR_LOCAL.bat." -ForegroundColor Red
     exit 1
 }
 New-Item -ItemType Directory -Path @($work, $logs) -Force | Out-Null
