@@ -31,7 +31,7 @@ El código incluye un `backend/Dockerfile` y `docker-compose.yml` para uso opcio
 
 ## Límites conocidos
 
-- La versión local funciona en la **misma PC** donde ejecutas el motor. No ofrece acceso remoto seguro desde iPhone ni genera un sitio público.
+- También puedes abrir esta versión desde un iPad autorizado con Tailscale Serve; la PC sigue procesando. Consulta [local/README_IPAD.md](local/README_IPAD.md) y usa CONFIGURAR_IPAD.bat una vez. No genera un sitio público ni es una app independiente de iPadOS.
 - Los servicios externos pueden bloquear la importación; para tu propio material, el archivo original es siempre una alternativa fiable.
 - El reconocimiento de jugadores NFL mejora la búsqueda, pero ningún ASR puede garantizar acertar todos los apellidos.
 - Las cookies de cuenta son opcionales. No las compartas en chats ni las subas a GitHub.
