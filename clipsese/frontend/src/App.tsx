@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Download, Film, Link as LinkIcon, Search, Upload, Wand2 } from 'lucide-react';
 import CropSelector from './components/CropSelector';
 import VerticalPreview from './components/VerticalPreview';
-import { IS_LOCAL, addMedia, createProject, fileUrl, finishProject, getProject, renderClip, searchTranscript, startTranscription } from './lib/api';
+import { IS_LOCAL, addMedia, createProject, downloadUrl, fileUrl, finishProject, getProject, renderClip, searchTranscript, startTranscription } from './lib/api';
 import type { Crop, Layout, MediaTransform, Project, SearchResult } from './types';
 
 const MAX_CLIP_SECONDS=90;
@@ -142,6 +142,15 @@ export default function App(){
   async function importMediaUrl(){if(!project||!mediaUrl.trim())return;setLoading('Importando multimedia…');try{const m:any=await addMedia(project.id,undefined,mediaUrl.trim());await refresh();setMediaId(m.id);setMediaTransform({...defaultMediaTransform});setMediaUrl('')}catch(e:any){setErr(e.message)}finally{setLoading('')}}
   async function downloadRender(file:string,startAt?:number,endAt?:number){
     if(!project)return;
+    if(IS_LOCAL){
+      // A real attachment response lets iPad Safari download huge MP4s without
+      // holding another full copy in JS memory.
+      const anchor=document.createElement('a');
+      anchor.href=downloadUrl(project.id,file);
+      anchor.download='ClipSese_'+file;
+      document.body.appendChild(anchor);anchor.click();anchor.remove();
+      return;
+    }
     setErr('');setLoading('Preparando descarga…');
     try{
       const res=await fetch(fileUrl(project.id,file));
