@@ -104,7 +104,7 @@ def _youtube_cmd(
     url: str,
     out_tpl: str,
     *,
-    format_selector: str,
+    format_selector: str | None,
     section: tuple[float, float] | None = None,
     use_pot: bool = True,
 ) -> list[str]:
@@ -116,8 +116,9 @@ def _youtube_cmd(
         "--fragment-retries", "3",
         "--no-progress",
         "--merge-output-format", "mp4",
-        "-f", format_selector,
     ]
+    if format_selector:
+        cmd += ["-f", format_selector]
 
     deno = _deno_path()
     if deno:
@@ -181,32 +182,56 @@ def _download_youtube(
     ]
 
     last_error: Exception | None = None
-    for label, use_pot, extra in attempts:
-        cmd = _youtube_cmd(
-            url,
-            out_tpl,
-            format_selector=format_selector,
-            section=section,
-            use_pot=use_pot,
-        )
-        if extra:
-            cmd = cmd[:-3] + extra + cmd[-3:]
-        try:
-            print(f"[CLIPSESE] YouTube attempt: {label}", flush=True)
-            run(cmd, timeout=timeout)
-            return _pick_download(out_dir, stem)
-        except CommandError as e:
-            last_error = e
-            low = str(e).lower()
-            if not any(x in low for x in ("sign in to confirm", "not a bot", "login_required", "403", "429", "po token")):
-                if "javascript runtime" in low or "js challenge" in low:
-                    raise RuntimeError("El runtime de YouTube no quedó disponible en el contenedor.") from e
-                raise RuntimeError(f"YouTube no pudo importarse: {str(e)[-1800:]}") from e
 
-    raise RuntimeError(
-        "YouTube ha rechazado la descarga. Prueba Archivo original, "
-        "actualiza yt-dlp/Deno o configura YOUTUBE_COOKIES_FILE en tu propia PC."
-    ) from last_error
+    # YouTube does not expose the same format set for every video/client. A strict
+    # H.264/MP4 selector is nice when available but must never make the whole app fail.
+    # Try the requested selector, then a broad best stream, then yt-dlp's own default.
+    selectors: list[str | None] = []
+    for selector in (format_selector, "bv*+ba/b", None):
+        if selector not in selectors:
+            selectors.append(selector)
+
+    for selector in selectors:
+        selector_label = selector or "yt-dlp-default"
+        for label, use_pot, extra in attempts:
+            cmd = _youtube_cmd(
+                url,
+                out_tpl,
+                format_selector=selector,
+                section=section,
+                use_pot=use_pot,
+            )
+            if extra:
+                # Insert client args before output template + URL.
+                cmd = cmd[:-3] + extra + cmd[-3:]
+            try:
+                print(f"[CLIPSESE] YouTube attempt: {label}; format={selector_label}", flush=True)
+                run(cmd, timeout=timeout)
+                return _pick_download(out_dir, stem)
+            except CommandError as e:
+                last_error = e
+                low = str(e).lower()
+                _clean_partial_files(out_dir, stem)
+
+                # Format availability is normal and video-specific. Move to the next
+                # selector instead of treating it as a fatal import error.
+                if "requested format is not available" in low or "requested format" in low and "not available" in low:
+                    break
+
+                # Authentication/rate-limit errors may differ by YouTube client.
+                if any(x in low for x in ("sign in to confirm", "not a bot", "login_required", "403", "429", "po token")):
+                    continue
+
+                if "javascript runtime" in low or "js challenge" in low:
+                    raise RuntimeError("YouTube necesita Deno/JavaScript y el runtime local no respondió.") from e
+
+                # Other extractor errors may still be client-specific, so try the next
+                # client/selector combination before surfacing the final diagnostic.
+                continue
+
+    if last_error:
+        raise RuntimeError(f"YouTube no pudo importarse después de probar formatos alternativos: {str(last_error)[-1800:]}") from last_error
+    raise RuntimeError("YouTube no pudo importarse y no devolvió un diagnóstico.")
 
 
 def ingest_upload(project_id: str, src: Path, original_name: str) -> dict:
@@ -242,8 +267,9 @@ def ingest_youtube(project_id: str, url: str) -> dict:
             pdir,
             "preview_source",
             format_selector=(
-                "b[ext=mp4][vcodec^=avc1][height<=480]/"
-                "b[ext=mp4][height<=480]/b[height<=480]"
+                "b[height<=720]/"
+                "bv*[height<=720]+ba/"
+                "b"
             ),
             timeout=900,
         )
